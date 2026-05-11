@@ -441,7 +441,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Logged for observability; fork-*/subagent-* values also skip fingerprint cache (see below).
         // Examples: "main", "fork-memory-extract", "subagent-scout".
         const requestSource = c.req.header("x-meridian-source")?.slice(0, 64) || undefined
-        let model = mapModelToClaudeModel(body.model || "sonnet", authStatus?.subscriptionType, agentMode)
+        const requestedModel = typeof body.model === "string" ? body.model : "sonnet"
+        let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode)
+        const envOverrides = requestedModel.startsWith("claude-opus-")
+          ? { ANTHROPIC_DEFAULT_OPUS_MODEL: requestedModel }
+          : undefined
         // workingDirectory = SDK subprocess cwd (must exist on the proxy host).
         // clientWorkingDirectory = the client's local path (may not exist here);
         // used for per-project fingerprint bucketing and a system-prompt hint
@@ -983,6 +987,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               await ensureFreshToken().catch(() => { /* reactive path handles */ })
 
               let tokenRefreshed = false
+              let didFreshBaseRetry = false
               while (true) {
                 // Track whether response content was yielded.
                 // The SDK emits metadata (session_id etc.) before the API call;
@@ -991,7 +996,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 try {
                   for await (const event of query(buildQueryOptions({
                     prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                    passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                    passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                     resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, betas, settingSources,
                     codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1038,7 +1043,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     yield* query(buildQueryOptions({
                       prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                       model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                       resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1070,6 +1075,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     })
                     console.error(`[PROXY] ${requestMeta.requestId} extra usage required for [1m], falling back to ${model} (skipping [1m] for 1h)`)
                     continue
+                  }
+
+                  if (isExtraUsageRequiredError(errMsg) && resumeSessionId && !didFreshBaseRetry) {
+                    didFreshBaseRetry = true
+                    claudeLog("upstream.session_fallback", {
+                      mode: "non_stream",
+                      model,
+                      reason: "extra_usage_required_resume",
+                    })
+                    console.error(`[PROXY] ${requestMeta.requestId} extra usage persisted on resumed ${model}, retrying as fresh session`)
+                    evictSession(profileSessionId, profileScopedCwd, allMessages)
+                    sdkUuidMap.length = 0
+                    for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
+                    yield* query(buildQueryOptions({
+                      prompt: buildFreshPrompt(allMessages, sanitizeOpts),
+                      model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
+                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                      resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
+                      effort, thinking, taskBudget, betas, settingSources,
+                      codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
+                      memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
+                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                      sdkDebug: sdkFeatures.sdkDebug,
+                      additionalDirectories: sdkFeatures.additionalDirectories
+                        ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
+                        : undefined,
+                      advisorModel,
+                    }))
+                    return
                   }
 
                   // Expired OAuth token: refresh once and retry
@@ -1452,6 +1486,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 await ensureFreshToken().catch(() => { /* reactive path handles */ })
 
                 let tokenRefreshed = false
+                let didFreshBaseRetry = false
 
                 while (true) {
                   // Track whether client-visible SSE events were yielded.
@@ -1462,7 +1497,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   try {
                     for await (const event of query(buildQueryOptions({
                       prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                      passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                       resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1504,7 +1539,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       yield* query(buildQueryOptions({
                         prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                         model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
+                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                         resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                         effort, thinking, taskBudget, betas, settingSources,
                         codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -1532,6 +1567,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       })
                       console.error(`[PROXY] ${requestMeta.requestId} extra usage required for [1m], falling back to ${model} (skipping [1m] for 1h)`)
                       continue
+                    }
+
+                    if (isExtraUsageRequiredError(errMsg) && resumeSessionId && !didFreshBaseRetry) {
+                      didFreshBaseRetry = true
+                      claudeLog("upstream.session_fallback", {
+                        mode: "stream",
+                        model,
+                        reason: "extra_usage_required_resume",
+                      })
+                      console.error(`[PROXY] ${requestMeta.requestId} extra usage persisted on resumed ${model}, retrying as fresh session`)
+                      evictSession(profileSessionId, profileScopedCwd, allMessages)
+                      sdkUuidMap.length = 0
+                      for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
+                      yield* query(buildQueryOptions({
+                        prompt: buildFreshPrompt(allMessages, sanitizeOpts),
+                        model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
+                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                        resumeSessionId: undefined, isUndo: false, undoRollbackUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
+                        effort, thinking, taskBudget, betas, settingSources,
+                        codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
+                        memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
+                        maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                        sdkDebug: sdkFeatures.sdkDebug,
+                        additionalDirectories: sdkFeatures.additionalDirectories
+                          ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
+                          : undefined,
+                        advisorModel,
+                      }))
+                      return
                     }
 
                     // Expired OAuth token: refresh once and retry

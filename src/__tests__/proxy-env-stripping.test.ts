@@ -220,6 +220,19 @@ describe("SDK model pin injection (fixes #419)", () => {
     expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-haiku-4-5")
   })
 
+  it("explicit claude-opus-4-6 requests pin the SDK env to 4.6", async () => {
+    const app = createTestApp()
+    await post(app, { ...BASIC_REQUEST, model: "claude-opus-4-6" })
+    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-4-6")
+  })
+
+  it("explicit claude-opus-4-7 requests beat inherited env pins", async () => {
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = "claude-opus-4-6"
+    const app = createTestApp()
+    await post(app, { ...BASIC_REQUEST, model: "claude-opus-4-7" })
+    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-4-7")
+  })
+
   it("shell ANTHROPIC_DEFAULT_* values win over Meridian's pins", async () => {
     process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = "claude-opus-4-1-20250805"
     process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-4-20250514"
