@@ -81,8 +81,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ pkg ];
-
     systemd.user.services.meridian = {
       Unit.Description = "Meridian - Local Anthropic API proxy";
 
