@@ -56,18 +56,18 @@
           };
 
         flake = {
-          overlays = {
-            default = self.overlays.meridian;
-            meridian =
-              _: prev:
-              withSystem prev.stdenv.hostPlatform.system ({ self', ... }: { inherit (self'.packages) meridian; });
-          };
-
           homeManagerModules = {
             default = self.homeManagerModules.meridian;
             meridian = moduleWithSystem (
               { self', ... }: import ./nix/hm-module.nix { inherit (self'.packages) meridian; }
             );
+          };
+
+          overlays = {
+            default = self.overlays.meridian;
+            meridian =
+              _: prev:
+              withSystem prev.stdenv.hostPlatform.system ({ self', ... }: { inherit (self'.packages) meridian; });
           };
         };
       }
