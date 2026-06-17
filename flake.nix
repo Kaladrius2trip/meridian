@@ -14,6 +14,10 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     systems.url = "github:nix-systems/default";
   };
@@ -22,6 +26,7 @@
     inputs@{
       bun2nix,
       flake-parts,
+      home-manager,
       nixpkgs,
       systems,
       ...
@@ -34,6 +39,8 @@
         ...
       }:
       {
+        imports = [ home-manager.flakeModules.home-manager ];
+
         systems = import systems;
 
         perSystem =
@@ -57,7 +64,7 @@
 
         flake = {
           homeModules = {
-            default = self.homeManagerModules.meridian;
+            default = self.homeModules.meridian;
             meridian = moduleWithSystem (
               { self', ... }: import ./nix/hm-module.nix { inherit (self'.packages) meridian; }
             );
