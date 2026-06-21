@@ -67,9 +67,7 @@
 
           homeModules = {
             default = self.homeModules.meridian;
-            meridian = moduleWithSystem (
-              { self', ... }: import ./nix/hm-module.nix { inherit (self'.packages) meridian; }
-            );
+            meridian = moduleWithSystem ({ self', ... }: import ./nix/hm-module.nix self'.packages);
           };
 
           overlays = {

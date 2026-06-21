@@ -1,4 +1,4 @@
-{ meridian }:
+packages:
 { config, lib, ... }:
 let
   cfg = config.services.meridian;
@@ -7,10 +7,8 @@ in
   options.services.meridian = {
     enable = lib.mkEnableOption "the Meridian proxy service";
 
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = meridian;
-      description = "The Meridian package to use.";
+    package = lib.mkPackageOption packages "meridian" {
+      pkgsText = "inputs.meridian.packages.\${pkgs.stdenv.hostPlatform.system}";
     };
 
     settings = {
