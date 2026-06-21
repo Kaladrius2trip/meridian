@@ -101,9 +101,8 @@ in
             }
             [
               (lib.filterAttrs (_: v: v != null))
-              (lib.mapAttrs (_: lib.generators.mkValueStringDefault { }))
               (lib.flip lib.mergeAttrs cfg.environment)
-              (lib.mapAttrsToList (k: v: "${k}=${v}"))
+              (lib.mapAttrsToList (lib.generators.mkKeyValueDefault { } "="))
             ];
       };
 
