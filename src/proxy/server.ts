@@ -112,6 +112,18 @@ function credentialStoreForProfile(profile: ResolvedProfile): CredentialStore | 
   )
 }
 
+function resolveNextNonApiProfile(config: ProxyConfig, currentProfileId: string): ResolvedProfile | undefined {
+  const profiles = getEffectiveProfiles(config.profiles).filter((profile) => (profile.type ?? "claude-max") !== "api")
+  if (profiles.length <= 1) return undefined
+
+  const currentIndex = profiles.findIndex((profile) => profile.id === currentProfileId)
+  const ordered = currentIndex < 0
+    ? profiles
+    : [...profiles.slice(currentIndex + 1), ...profiles.slice(0, currentIndex)]
+  const next = ordered.find((profile) => profile.id !== currentProfileId)
+  return next ? resolveProfile(config.profiles, config.defaultProfile, next.id) : undefined
+}
+
 async function ensureFreshTokenForProfiles(config: ProxyConfig): Promise<void> {
   const profiles = getEffectiveProfiles(config.profiles)
   if (profiles.length === 0) return
@@ -485,10 +497,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const outputFormat = parsedOutputFormat.value
 
         // Resolve profile: header > active > default > first configured
-        const profile = resolveProfile(
+        const requestedProfileId = c.req.header("x-meridian-profile") || undefined
+        let profile = resolveProfile(
           finalConfig.profiles,
           finalConfig.defaultProfile,
-          c.req.header("x-meridian-profile") || undefined
+          requestedProfileId
         )
 
         const authStatus = await getClaudeAuthStatusAsync(
@@ -569,8 +582,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const sdkModelDefaults = resolveSdkModelDefaults()
 
         // Overlay profile-specific env vars (e.g. CLAUDE_CONFIG_DIR for multi-account)
-        const profileEnv = { ...sdkModelDefaults, ...cleanEnv, ...profile.env }
-        const profileCredentialStore = credentialStoreForProfile(profile)
+        let profileEnv = { ...sdkModelDefaults, ...cleanEnv, ...profile.env }
+        let profileCredentialStore = credentialStoreForProfile(profile)
 
         let systemContext = ""
         if (body.system) {
@@ -694,12 +707,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Scope session keys by profile to isolate resume state across accounts.
         // For agents with session IDs (OpenCode): prefix the key.
         // For agents without (Pi): pass profile-scoped workingDirectory to fingerprint lookup.
-        const profileSessionId = profile.id !== "default" && agentSessionId
+        let profileSessionId = profile.id !== "default" && agentSessionId
           ? `${profile.id}:${agentSessionId}` : agentSessionId
         // Use the client-local CWD for fingerprint bucketing so that two
         // independent client projects don't collide on the same first-user-
         // message hash even when they share an SDK cwd on the proxy host.
-        const profileScopedCwd = profile.id !== "default"
+        let profileScopedCwd = profile.id !== "default"
           ? `${clientWorkingDirectory}::profile=${profile.id}` : clientWorkingDirectory
         // Clients that run concurrent sub-request flows in the same conversation
         // (e.g. pylon's memory-extract fork or subagent children) share the same
@@ -751,6 +764,34 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const resumeSessionId = cachedSession?.claudeSessionId
         // For undo: fork the session at the rollback point
         const undoRollbackUuid = isUndo && lineageResult.type === "undo" ? lineageResult.rollbackUuid : undefined
+        let currentResumeSessionId = resumeSessionId
+        let currentIsUndo = isUndo
+        let currentUndoRollbackUuid = undoRollbackUuid
+        let didProfileFallback = false
+
+        const switchToNextProfile = (mode: "non_stream" | "stream"): boolean => {
+          if (requestedProfileId || didProfileFallback) return false
+          const nextProfile = resolveNextNonApiProfile(finalConfig, profile.id)
+          if (!nextProfile) return false
+
+          const previousProfileId = profile.id
+          profile = nextProfile
+          profileEnv = { ...sdkModelDefaults, ...cleanEnv, ...profile.env }
+          profileCredentialStore = credentialStoreForProfile(profile)
+          profileSessionId = profile.id !== "default" && agentSessionId
+            ? `${profile.id}:${agentSessionId}` : agentSessionId
+          profileScopedCwd = profile.id !== "default"
+            ? `${clientWorkingDirectory}::profile=${profile.id}` : clientWorkingDirectory
+          currentResumeSessionId = undefined
+          currentIsUndo = false
+          currentUndoRollbackUuid = undefined
+          didProfileFallback = true
+          setActiveProfile(profile.id)
+          rateLimitStore.clear()
+          claudeLog("profile.auto_switch", { mode, from: previousProfileId, to: profile.id, reason: "rate_limit" })
+          plog(`[PROXY] ${requestMeta.requestId} profile ${previousProfileId} rate-limited, retrying with profile ${profile.id}`)
+          return true
+        }
 
         // Debug: log request details
         const msgSummary = body.messages?.map((m: any) => {
@@ -1229,7 +1270,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   for await (const event of query(buildQueryOptions({
                     prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                     passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
-                    resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
+                    resumeSessionId: currentResumeSessionId, isUndo: currentIsUndo, undoRollbackUuid: currentUndoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, outputFormat, betas, settingSources,
                     codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
@@ -1364,6 +1405,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         reason: "rate_limit",
                       })
                       plog(`[PROXY] ${requestMeta.requestId} rate-limited on [1m], retrying with ${model}`)
+                      continue
+                    }
+                    if (switchToNextProfile("non_stream")) {
+                      sdkUuidMap.length = 0
+                      for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                       continue
                     }
                     if (rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
@@ -1804,7 +1850,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     for await (const event of query(buildQueryOptions({
                       prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                       passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
-                      resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
+                      resumeSessionId: currentResumeSessionId, isUndo: currentIsUndo, undoRollbackUuid: currentUndoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
@@ -1930,6 +1976,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                           reason: "rate_limit",
                         })
                         plog(`[PROXY] ${requestMeta.requestId} rate-limited on [1m], retrying with ${model}`)
+                        continue
+                      }
+                      if (switchToNextProfile("stream")) {
+                        sdkUuidMap.length = 0
+                        for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                         continue
                       }
                       if (rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
@@ -3078,6 +3129,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     if (xApiKey) internalHeaders["x-api-key"] = xApiKey
     const authz = c.req.header("authorization")
     if (authz) internalHeaders["authorization"] = authz
+    const opencodeSession = c.req.header("x-opencode-session")
+    if (opencodeSession) internalHeaders["x-opencode-session"] = opencodeSession
+    const sessionAffinity = c.req.header("x-session-affinity")
+    if (sessionAffinity) internalHeaders["x-session-affinity"] = sessionAffinity
+    const meridianSource = c.req.header("x-meridian-source")
+    if (meridianSource) internalHeaders["x-meridian-source"] = meridianSource
+    const meridianProfile = c.req.header("x-meridian-profile")
+    if (meridianProfile) internalHeaders["x-meridian-profile"] = meridianProfile
     const internalReq = new Request("http://internal/v1/messages", {
       method: "POST",
       headers: internalHeaders,

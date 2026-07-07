@@ -20,7 +20,6 @@ import {
   messageDelta,
   messageStop,
   assistantMessage,
-  parseSSE,
   toolUseBlockStart,
   inputJsonDelta,
 } from "./helpers"
@@ -58,9 +57,23 @@ mock.module("../mcpTools", () => ({
 }))
 
 const { createProxyServer, clearSessionCache } = await import("../proxy/server")
+const { storeSession } = await import("../proxy/session/cache")
+const { resetActiveProfile } = await import("../proxy/profiles")
 
 function createTestApp() {
   const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
+  return app
+}
+
+function createProfileTestApp() {
+  const { app } = createProxyServer({
+    port: 0,
+    host: "127.0.0.1",
+    profiles: [
+      { id: "personal", claudeConfigDir: "/profiles/personal" },
+      { id: "work", claudeConfigDir: "/profiles/work" },
+    ],
+  })
   return app
 }
 
@@ -238,6 +251,52 @@ describe("POST /v1/chat/completions — non-streaming", () => {
       },
       parent_tool_use_id: null,
     }])
+  })
+
+  it("forwards x-opencode-session to the internal messages request", async () => {
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    storeSession("openai-session-1", [], "sdk-session-1")
+    const app = createTestApp()
+
+    const res = await app.fetch(new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-opencode-session": "openai-session-1",
+      },
+      body: JSON.stringify({
+        stream: false,
+        messages: [{ role: "user", content: "continue" }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.resume).toBe("sdk-session-1")
+  })
+
+  it("forwards x-meridian-profile to the internal messages request", async () => {
+    resetActiveProfile()
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createProfileTestApp()
+
+    const res = await app.fetch(new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-meridian-profile": "work",
+      },
+      body: JSON.stringify({
+        stream: false,
+        messages: [{ role: "user", content: "continue" }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    const env = capturedOptions?.env
+    const claudeConfigDir = env && typeof env === "object" && "CLAUDE_CONFIG_DIR" in env
+      ? env.CLAUDE_CONFIG_DIR
+      : undefined
+    expect(claudeConfigDir).toBe("/profiles/work")
   })
 })
 
