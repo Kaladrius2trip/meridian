@@ -42,7 +42,7 @@ export type ClaudeModel = "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku
  */
 export const CANONICAL_FABLE_MODEL = "claude-fable-5"
 export const CANONICAL_OPUS_MODEL = "claude-opus-4-8"
-export const CANONICAL_SONNET_MODEL = "claude-sonnet-4-6"
+export const CANONICAL_SONNET_MODEL = "claude-sonnet-5"
 export const CANONICAL_HAIKU_MODEL = "claude-haiku-4-5"
 
 /**

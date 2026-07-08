@@ -519,6 +519,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode)
         const envOverrides = requestedModel.startsWith("claude-opus-")
           ? { ANTHROPIC_DEFAULT_OPUS_MODEL: requestedModel }
+          : requestedModel.startsWith("claude-sonnet-")
+            ? { ANTHROPIC_DEFAULT_SONNET_MODEL: requestedModel }
           : requestedModel.startsWith("claude-fable-")
             ? { ANTHROPIC_DEFAULT_FABLE_MODEL: requestedModel }
             : requestedModel.startsWith("claude-sonnet-")
