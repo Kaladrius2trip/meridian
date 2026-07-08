@@ -125,6 +125,8 @@ export interface AnthropicRequestBody {
 export interface AnthropicUsage {
   input_tokens?: number
   output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
 }
 
 export interface AnthropicContentBlockText {
@@ -238,6 +240,8 @@ export interface OpenAiCompletion {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
   }
 }
 
@@ -594,7 +598,10 @@ export function translateAnthropicToOpenAi(
         .join("")
     : ""
 
-  const promptTokens = response.usage?.input_tokens ?? 0
+  const uncachedPromptTokens = response.usage?.input_tokens ?? 0
+  const cacheReadTokens = response.usage?.cache_read_input_tokens ?? 0
+  const cacheCreationTokens = response.usage?.cache_creation_input_tokens ?? 0
+  const promptTokens = uncachedPromptTokens + cacheReadTokens + cacheCreationTokens
   const completionTokens = response.usage?.output_tokens ?? 0
 
   return {
@@ -616,6 +623,8 @@ export function translateAnthropicToOpenAi(
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
       total_tokens: promptTokens + completionTokens,
+      ...(cacheReadTokens ? { cache_read_input_tokens: cacheReadTokens } : {}),
+      ...(cacheCreationTokens ? { cache_creation_input_tokens: cacheCreationTokens } : {}),
     },
   }
 }

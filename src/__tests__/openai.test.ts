@@ -744,6 +744,28 @@ describe("translateAnthropicToOpenAi", () => {
     expect(result.usage.total_tokens).toBe(0)
   })
 
+  it("preserves Anthropic cache usage for OpenAI-compatible clients", () => {
+    const result = translateAnthropicToOpenAi(
+      {
+        content: [{ type: "text", text: "cached" }],
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 8,
+          output_tokens: 454,
+          cache_read_input_tokens: 182_000,
+          cache_creation_input_tokens: 525,
+        },
+      },
+      ID, MODEL, CREATED
+    )
+
+    expect(result.usage.prompt_tokens).toBe(182_533)
+    expect(result.usage.completion_tokens).toBe(454)
+    expect(result.usage.total_tokens).toBe(182_987)
+    expect(result.usage.cache_read_input_tokens).toBe(182_000)
+    expect(result.usage.cache_creation_input_tokens).toBe(525)
+  })
+
   // --- tool_use blocks ---
 
   it("tool_use block → tool_calls on message", () => {
