@@ -5,6 +5,7 @@ import { droidTransforms } from "./droid"
 import { piTransforms } from "./pi"
 import { forgeCodeTransforms } from "./forgecode"
 import { passthroughTransforms } from "./passthrough"
+import { hermesTransforms } from "./hermes"
 
 const ADAPTER_TRANSFORMS: Record<string, readonly Transform[]> = {
   opencode: openCodeTransforms,
@@ -17,6 +18,7 @@ const ADAPTER_TRANSFORMS: Record<string, readonly Transform[]> = {
   // tool/passthrough behaviour is identical; only the preset default differs
   // (see sdkFeatures.ADAPTER_DEFAULTS.openai).
   openai: openCodeTransforms,
+  hermes: hermesTransforms,
 }
 
 export function getAdapterTransforms(adapterName: string): readonly Transform[] {
