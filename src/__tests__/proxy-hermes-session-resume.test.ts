@@ -55,7 +55,7 @@ async function expectOk(response: Response): Promise<void> {
   if (response.status !== 200) throw new Error(await response.text())
 }
 
-describe("Hermes OpenAI session resume", () => {
+describe("Hermes session resume", () => {
   beforeEach(() => {
     clearSessionCache()
     capturedQueryParams = null
@@ -77,7 +77,7 @@ describe("Hermes OpenAI session resume", () => {
       stream: false,
       messages: [{ role: "user", content: "hi bro who are you ?" }],
       tools: [{ type: "function", function: { name: "skill_view", parameters: {} } }],
-    }, { "x-meridian-agent": "hermes", "x-opencode-session": "hermes-session-1" })
+    }, { "x-meridian-agent": "hermes", "x-hermes-session": "hermes-session-1" })
     await expectOk(firstResponse)
     await firstResponse.json()
 
@@ -91,7 +91,7 @@ describe("Hermes OpenAI session resume", () => {
         { role: "tool", tool_call_id: "call_skill", content: "Caveman skill loaded." },
       ],
       tools: [{ type: "function", function: { name: "skill_view", parameters: {} } }],
-    }, { "x-meridian-agent": "hermes", "x-opencode-session": "hermes-session-1" })
+    }, { "x-meridian-agent": "hermes", "x-hermes-session": "hermes-session-1" })
     await expectOk(secondResponse)
     await secondResponse.json()
 

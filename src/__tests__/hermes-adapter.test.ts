@@ -29,6 +29,11 @@ describe("hermesAdapter", () => {
     expect(detectAdapter(makeContext({ "x-meridian-agent": "Hermes" })).name).toBe("hermes")
   })
 
+  it("uses Hermes session headers without consuming OpenCode session headers", () => {
+    expect(hermesAdapter.getSessionId(makeContext({ "x-hermes-session": "hermes-session-1" }))).toBe("hermes-session-1")
+    expect(hermesAdapter.getSessionId(makeContext({ "x-opencode-session": "opencode-session-1" }))).toBeUndefined()
+  })
+
   it("strips Claude Code SDK catalog and settings while preserving passthrough tools", () => {
     const ctx = createRequestContext({
       adapter: "hermes",

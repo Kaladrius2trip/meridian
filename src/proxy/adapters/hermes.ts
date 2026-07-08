@@ -8,7 +8,7 @@ export const hermesAdapter: AgentAdapter = {
   name: "hermes",
 
   getSessionId(c: Context): string | undefined {
-    return c.req.header("x-opencode-session") ?? c.req.header("x-session-affinity")
+    return c.req.header("x-hermes-session")
   },
 
   extractWorkingDirectory(_body: unknown): undefined {
