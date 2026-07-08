@@ -51,6 +51,7 @@ import { checkPluginConfigured } from "./setup"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
+import { resolveOpenAiInternalAgent } from "./openaiAdapterRouting"
 import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
@@ -3121,9 +3122,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // `opencode` adapter, whose claude_code preset defaults ON — hijacking the
     // client's own system prompt with the Claude Code persona (#526). The
     // `openai` adapter mirrors opencode but defaults the preset OFF.
+    const internalAgent = resolveOpenAiInternalAgent(c.req.header("x-meridian-agent"))
     const internalHeaders: Record<string, string> = {
       "Content-Type": "application/json",
-      "x-meridian-agent": "openai",
+      "x-meridian-agent": internalAgent,
     }
     const xApiKey = c.req.header("x-api-key")
     if (xApiKey) internalHeaders["x-api-key"] = xApiKey
@@ -3161,7 +3163,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // x-meridian-agent tag set on the internal hop above — so resolve directly
     // rather than re-detecting from the (generic) client User-Agent.
     const { getFeaturesForAdapter } = require("./sdkFeatures") as typeof import("./sdkFeatures")
-    const sdkFeatures = getFeaturesForAdapter("openai")
+    const sdkFeatures = getFeaturesForAdapter(internalAgent)
 
     if (!anthropicBody.stream) {
       const anthropicRes = await internalRes.json() as Record<string, unknown>

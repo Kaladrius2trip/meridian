@@ -298,6 +298,26 @@ describe("POST /v1/chat/completions — non-streaming", () => {
       : undefined
     expect(claudeConfigDir).toBe("/profiles/work")
   })
+
+  it("forwards x-meridian-agent=hermes to the internal messages request", async () => {
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await app.fetch(new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-meridian-agent": "hermes",
+      },
+      body: JSON.stringify({
+        stream: false,
+        messages: [{ role: "user", content: "continue" }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.tools).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
