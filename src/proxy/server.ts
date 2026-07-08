@@ -939,6 +939,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const toolIndex = buildToolUseIndex(allMessages ?? messagesToConvert ?? [])
         textPrompt = messagesToConvert
           ?.map((m: { role: string; content: any }) => {
+            if (isResume && m.role !== "user") return ""
             const role = m.role === "assistant" ? "Assistant" : "Human"
             const content = m.role === "assistant"
               ? flattenAssistantContent(m.content)
