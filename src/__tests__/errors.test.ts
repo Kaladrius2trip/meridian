@@ -199,12 +199,18 @@ describe("classifyError", () => {
       )).toBe(true)
     })
 
+    it("detects third-party-app extra usage billing variant", () => {
+      expect(isExtraUsageRequiredError(
+        "Claude Code returned an error result: API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going."
+      )).toBe(true)
+    })
+
     it("returns false for unrelated errors", () => {
       expect(isExtraUsageRequiredError("rate limit exceeded")).toBe(false)
       expect(isExtraUsageRequiredError("authentication failed")).toBe(false)
     })
 
-    it("returns false when only 'extra usage' but no '1m'", () => {
+    it("returns false for passive extra usage mentions", () => {
       expect(isExtraUsageRequiredError("extra usage enabled")).toBe(false)
     })
 
