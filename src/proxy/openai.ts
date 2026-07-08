@@ -521,7 +521,7 @@ export function translateOpenAiToAnthropic(body: OpenAiChatRequest): AnthropicRe
   }
 
   const result: AnthropicRequestBody = {
-    model: body.model ?? "claude-sonnet-4-6",
+    model: body.model ?? "claude-sonnet-5",
     messages: messagesToSend,
     max_tokens: body.max_tokens ?? body.max_completion_tokens ?? 8192,
     tools: tools,
@@ -907,11 +907,11 @@ const FULL_CAPABILITIES: ModelCapabilities = Object.freeze({
 export function buildModelList(isMaxSubscription: boolean, now = Math.floor(Date.now() / 1000)): OpenAiModel[] {
   return [
     {
-      id: "claude-sonnet-4-6",
+      id: "claude-sonnet-5",
       object: "model",
       created: now,
       owned_by: "anthropic",
-      display_name: "Claude Sonnet 4.6",
+      display_name: "Claude Sonnet 5",
       context_window: 200_000,
       capabilities: FULL_CAPABILITIES,
     },

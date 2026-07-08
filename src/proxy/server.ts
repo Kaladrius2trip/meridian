@@ -3160,7 +3160,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
     const completionId = `chatcmpl-${randomUUID()}`
     const created = Math.floor(Date.now() / 1000)
-    const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : "claude-sonnet-4-6"
+    const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : "claude-sonnet-5"
 
     // Resolve SDK features for this request (thinking passthrough setting).
     // The OpenAI endpoint is unambiguously the `openai` adapter — matching the
