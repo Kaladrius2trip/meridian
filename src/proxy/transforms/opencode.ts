@@ -4,6 +4,7 @@ import { BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS, ALLOWED_MCP_TOOLS } from
 import { buildAgentDefinitionsFromTool } from "../agentDefs"
 import { fuzzyMatchAgentName } from "../agentMatch"
 import { resolvePassthrough } from "../../env"
+import { scrubOpencodeFingerprints } from "./promptScrub"
 
 export const openCodeTransforms: Transform[] = [
   {
@@ -58,7 +59,7 @@ export const openCodeTransforms: Transform[] = [
       }
 
       // System context addendum (agent name hints)
-      let systemContext = ctx.systemContext
+      let systemContext = scrubOpencodeFingerprints(ctx.systemContext)
       if (validAgentNames.length > 0 && systemContext !== undefined) {
         systemContext += `\n\nIMPORTANT: When using the task/Task tool, the subagent_type parameter must be one of these exact values (case-sensitive, lowercase): ${validAgentNames.join(", ")}. Do NOT capitalize or modify these names.`
       } else if (validAgentNames.length > 0) {
