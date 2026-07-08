@@ -23,6 +23,20 @@ import {
   type LineageResult,
 } from "./lineage"
 
+function isToolResultOnlyDelta(messages: Array<{ role: string; content: unknown }>): boolean {
+  return messages.length > 0 && messages.every((m) => m.role === "user" && Array.isArray(m.content) && m.content.length > 0 && m.content.every((b) => b?.type === "tool_result"))
+}
+
+function lookupExplicitSession(
+  cached: SessionState,
+  messages: Array<{ role: string; content: unknown }>,
+  sessionId: string,
+  cache: typeof sessionCache,
+): LineageResult {
+  if (isToolResultOnlyDelta(messages)) return { type: "continuation", session: cached }
+  return verifyLineage(cached, messages, sessionId, cache)
+}
+
 // --- Cache setup ---
 
 const DEFAULT_MAX_SESSIONS = 1000
@@ -138,7 +152,7 @@ export function lookupSession(
   if (sessionId) {
     const cached = sessionCache.get(sessionId)
     if (cached) {
-      const result = verifyLineage(cached, messages, sessionId, sessionCache)
+      const result = lookupExplicitSession(cached, messages, sessionId, sessionCache)
       if (result.type === "continuation" || result.type === "compaction") touchSession(result.session)
       return result
     }
@@ -153,7 +167,7 @@ export function lookupSession(
         sdkMessageUuids: shared.sdkMessageUuids,
         contextUsage: shared.contextUsage,
       }
-      const result = verifyLineage(state, messages, sessionId, sessionCache)
+      const result = lookupExplicitSession(state, messages, sessionId, sessionCache)
       if (result.type === "continuation" || result.type === "compaction") {
         sessionCache.set(sessionId, state)
       }
