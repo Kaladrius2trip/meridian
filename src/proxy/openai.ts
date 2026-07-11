@@ -921,7 +921,7 @@ export function buildModelList(isMaxSubscription: boolean, now = Math.floor(Date
       created: now,
       owned_by: "anthropic",
       display_name: "Claude Sonnet 5",
-      context_window: 200_000,
+      context_window: 1_000_000,
       capabilities: FULL_CAPABILITIES,
     },
     {

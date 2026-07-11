@@ -6,6 +6,8 @@ import { buildQueryOptions } from "../proxy/query"
 import { createRequestContext, runTransformHook } from "../proxy/transform"
 import { getAdapterTransforms } from "../proxy/transforms/registry"
 import { resolveOpenAiInternalAgent } from "../proxy/openaiAdapterRouting"
+import { createPassthroughMcpServer } from "../proxy/passthroughTools"
+import { BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS } from "../proxy/tools"
 
 function makeContext(extraHeaders: Record<string, string> = {}): any {
   const allHeaders: Record<string, string> = {}
@@ -70,6 +72,72 @@ describe("hermesAdapter", () => {
     expect(transformed.sdkHooks).toBeUndefined()
     expect((result.options as { tools?: readonly unknown[] }).tools).toEqual([])
     expect((result.options as { settingSources?: readonly unknown[] }).settingSources).toEqual([])
+    expect((result.options as { disallowedTools?: readonly string[] }).disallowedTools).toContain("TaskOutput")
+    for (const tool of CLAUDE_CODE_ONLY_TOOLS) {
+      expect((result.options as { disallowedTools?: readonly string[] }).disallowedTools).toContain(tool)
+    }
+  })
+
+  it("disallows SDK shell builtins while allowing Hermes terminal passthrough", () => {
+    const hermesTools = [
+      {
+        name: "terminal",
+        description: "Run shell commands through Hermes.",
+        input_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+      {
+        name: "process",
+        description: "Inspect Hermes processes.",
+        input_schema: { type: "object", properties: {} },
+      },
+    ]
+    const ctx = createRequestContext({
+      adapter: "hermes",
+      body: { tools: [{ name: "terminal" }, { name: "process" }] },
+      headers: new Headers({ "x-meridian-agent": "hermes" }),
+      model: "fable[1m]",
+      messages: [{ role: "user", content: "run pwd" }],
+      systemContext: "You are Hermes Agent",
+      tools: hermesTools,
+      stream: false,
+      workingDirectory: "/tmp",
+    })
+    const passthroughMcp = createPassthroughMcpServer(hermesTools)
+
+    const transformed = runTransformHook(getAdapterTransforms("hermes"), "onRequest", ctx, "hermes")
+    const result = buildQueryOptions({
+      prompt: "run pwd",
+      model: transformed.model,
+      workingDirectory: transformed.workingDirectory,
+      systemContext: transformed.systemContext ?? "",
+      claudeExecutable: "/usr/bin/claude",
+      passthrough: transformed.passthrough === true,
+      stream: transformed.stream,
+      sdkAgents: transformed.sdkAgents,
+      passthroughMcp,
+      cleanEnv: {},
+      hasDeferredTools: false,
+      isUndo: false,
+      blockedTools: transformed.blockedTools,
+      incompatibleTools: transformed.incompatibleTools,
+      mcpServerName: hermesAdapter.getMcpServerName(),
+      allowedMcpTools: transformed.allowedMcpTools,
+    })
+
+    expect(result.options.tools).toEqual([])
+    expect(result.options.allowedTools).toContain("mcp__oc__terminal")
+    expect(result.options.allowedTools).toContain("mcp__oc__process")
+    expect(result.options.allowedTools).not.toContain("Bash")
+    for (const tool of BLOCKED_BUILTIN_TOOLS) {
+      expect(result.options.disallowedTools).toContain(tool)
+    }
+    for (const tool of CLAUDE_CODE_ONLY_TOOLS) {
+      expect(result.options.disallowedTools).toContain(tool)
+    }
   })
 
   it("truncates Hermes persona boilerplate before Claude Code planning notes", () => {

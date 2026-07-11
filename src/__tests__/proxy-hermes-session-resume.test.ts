@@ -98,4 +98,40 @@ describe("Hermes session resume", () => {
     expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
     expect(capturedQueryParams.prompt).toContain("Caveman skill loaded.")
   })
+
+  it("does not resume when tool continuation uses a different explicit session", async () => {
+    const app = createTestApp()
+
+    mockMessages = [
+      assistantMessage([
+        { type: "tool_use", id: "call_skill_a", name: "skill_view", input: { name: "caveman" } },
+      ]),
+    ]
+
+    const firstResponse = await postChat(app, {
+      model: "claude-fable-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [{ role: "user", content: "hi bro who are you ?" }],
+      tools: [{ type: "function", function: { name: "skill_view", parameters: {} } }],
+    }, { "x-meridian-agent": "hermes", "x-hermes-session": "hermes-session-1" })
+    await expectOk(firstResponse)
+    await firstResponse.json()
+
+    mockMessages = [assistantMessage([{ type: "text", text: "I am Hermes." }])]
+
+    const secondResponse = await postChat(app, {
+      model: "claude-fable-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [
+        { role: "tool", tool_call_id: "call_skill_a", content: "Caveman skill loaded." },
+      ],
+      tools: [{ type: "function", function: { name: "skill_view", parameters: {} } }],
+    }, { "x-meridian-agent": "hermes", "x-hermes-session": "hermes-session-2" })
+    await expectOk(secondResponse)
+    await secondResponse.json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+  })
 })

@@ -38,9 +38,9 @@ describe("mapModelToClaudeModel", () => {
     expect(mapModelToClaudeModel("sonnet", "max")).toBe("sonnet")
   })
 
-  it("maps sonnet 5 models to sonnet (200k) for max subscriptions by default", () => {
-    expect(mapModelToClaudeModel("claude-sonnet-5", "max")).toBe("sonnet")
-    expect(mapModelToClaudeModel("claude-sonnet-5", "max", "primary")).toBe("sonnet")
+  it("maps sonnet 5 models to sonnet[1m] because Sonnet 5 has native 1M context", () => {
+    expect(mapModelToClaudeModel("claude-sonnet-5", "max")).toBe("sonnet[1m]")
+    expect(mapModelToClaudeModel("claude-sonnet-5", "max", "primary")).toBe("sonnet[1m]")
   })
 
   it("maps sonnet 4.5 models to sonnet (no 1M regardless of subscription)", () => {
@@ -95,6 +95,7 @@ describe("mapModelToClaudeModel", () => {
       process.env.CLAUDE_PROXY_SONNET_MODEL = "sonnet[1m]"
       process.env.MERIDIAN_1M_CONTEXT_SUPPORT = "0"
       expect(mapModelToClaudeModel("sonnet", "max")).toBe("sonnet")
+      expect(mapModelToClaudeModel("claude-sonnet-5", "max")).toBe("sonnet")
     })
 
     it("accepts false/no spellings and the CLAUDE_PROXY_ alias", () => {
@@ -163,9 +164,8 @@ describe("mapModelToClaudeModel", () => {
       expect(mapModelToClaudeModel("claude-haiku-4-5", "max", "subagent")).toBe("haiku")
     })
 
-    it("primary agents get opus[1m] but sonnet (200k) for max subscription", () => {
-      // Opus [1m] is included with Max; Sonnet [1m] requires Extra Usage
-      expect(mapModelToClaudeModel("claude-sonnet-4-6", "max", "primary")).toBe("sonnet")
+    it("primary agents get opus[1m] and Sonnet 5 1M for max subscription", () => {
+      expect(mapModelToClaudeModel("claude-sonnet-5", "max", "primary")).toBe("sonnet[1m]")
       expect(mapModelToClaudeModel("claude-opus-4-6", "max", "primary")).toBe("opus[1m]")
     })
 

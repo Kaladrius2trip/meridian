@@ -1,4 +1,5 @@
 import type { RequestContext, Transform } from "../transform"
+import { BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS } from "../tools"
 import { stripHermesBoilerplate } from "./promptScrub"
 
 export const hermesTransforms: Transform[] = [
@@ -9,8 +10,8 @@ export const hermesTransforms: Transform[] = [
     onRequest(ctx: RequestContext): RequestContext {
       return {
         ...ctx,
-        blockedTools: [],
-        incompatibleTools: [],
+        blockedTools: BLOCKED_BUILTIN_TOOLS,
+        incompatibleTools: CLAUDE_CODE_ONLY_TOOLS,
         allowedMcpTools: [],
         sdkAgents: {},
         sdkHooks: undefined,

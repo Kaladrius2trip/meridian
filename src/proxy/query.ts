@@ -85,7 +85,7 @@ export interface QueryContext {
   /** Effort level — controls thinking depth (low/medium/high/xhigh/max) */
   effort?: Effort
   /** Thinking configuration — adaptive, enabled with budget, or disabled */
-  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens?: number } | { type: 'disabled' }
+  thinking?: { type: 'adaptive'; display?: 'summarized' } | { type: 'enabled'; budgetTokens?: number } | { type: 'disabled' }
   /** API-side task budget in tokens — model paces tool use within this limit */
   taskBudget?: { total: number }
   /** Native JSON-schema output contract for the Claude Agent SDK */

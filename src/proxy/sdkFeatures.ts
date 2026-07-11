@@ -80,6 +80,7 @@ const ADAPTER_DEFAULTS: Record<string, Partial<AdapterFeatures>> = {
   },
   hermes: {
     codeSystemPrompt: false,
+    thinkingPassthrough: true,
   },
 }
 

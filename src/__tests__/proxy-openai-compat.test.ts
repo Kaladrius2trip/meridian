@@ -20,6 +20,7 @@ import {
   messageDelta,
   messageStop,
   assistantMessage,
+  streamEvent,
   toolUseBlockStart,
   inputJsonDelta,
 } from "./helpers"
@@ -318,6 +319,79 @@ describe("POST /v1/chat/completions — non-streaming", () => {
     expect(res.status).toBe(200)
     expect(capturedOptions?.tools).toEqual([])
   })
+
+  it("maps Hermes OpenAI reasoning intent to adaptive summarized SDK thinking and reasoning_content", async () => {
+    mockMessages = [assistantMessage([
+      { type: "thinking", thinking: "sdk thought" },
+      { type: "text", text: "answer" },
+    ])]
+    const app = createTestApp()
+
+    const res = await app.fetch(new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-meridian-agent": "hermes",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-5",
+        stream: false,
+        reasoning_effort: "high",
+        messages: [{ role: "user", content: "think" }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.effort).toBe("high")
+    expect(capturedOptions?.thinking).toEqual({ type: "adaptive", display: "summarized" })
+    expect(await res.json()).toMatchObject({
+      choices: [{
+        message: {
+          content: "answer",
+          reasoning_content: "sdk thought",
+        },
+      }],
+    })
+  })
+
+  it("leaves generic OpenAI reasoning effort without SDK thinking config", async () => {
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      model: "claude-sonnet-5",
+      stream: false,
+      reasoning_effort: "high",
+      messages: [{ role: "user", content: "think" }],
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.effort).toBe("high")
+    expect(capturedOptions?.thinking).toBeUndefined()
+  })
+
+  it("leaves unsupported Hermes models without adaptive summarized thinking", async () => {
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await app.fetch(new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-meridian-agent": "hermes",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5",
+        stream: false,
+        reasoning_effort: "high",
+        messages: [{ role: "user", content: "think" }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.effort).toBe("high")
+    expect(capturedOptions?.thinking).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -412,6 +486,41 @@ describe("POST /v1/chat/completions — streaming", () => {
       })
 
     expect(contentChunks.join("")).toBe("Hello World")
+  })
+
+  it("emits Hermes thinking_delta as OpenAI reasoning_content", async () => {
+    mockMessages = [
+      messageStart("msg_1"),
+      streamEvent({ type: "content_block_start", index: 0, content_block: { type: "thinking" } }),
+      streamEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "plan" } }),
+      blockStop(0),
+      textBlockStart(1), textDelta(1, "answer"),
+      blockStop(1), messageDelta("end_turn"), messageStop(),
+    ]
+    const app = createTestApp()
+
+    const res = await app.fetch(new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-meridian-agent": "hermes",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-8",
+        stream: true,
+        reasoning_effort: "medium",
+        messages: [{ role: "user", content: "think" }],
+      }),
+    }))
+
+    const chunks = streamChunks(await readStream(res))
+    const reasoning = chunks
+      .flatMap(c => c.choices.map(choice => choice.delta.reasoning_content))
+      .filter((content): content is string => typeof content === "string")
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.thinking).toEqual({ type: "adaptive", display: "summarized" })
+    expect(reasoning.join("")).toBe("plan")
   })
 
   it("emits finish_reason stop in final chunk", async () => {

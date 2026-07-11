@@ -48,7 +48,7 @@ import type { RequestMetric } from "../telemetry"
 import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, type CredentialStore } from "./tokenRefresh"
 import { checkPluginConfigured } from "./setup"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, CANONICAL_OPUS_MODEL, CANONICAL_SONNET_MODEL } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { resolveOpenAiInternalAgent } from "./openaiAdapterRouting"
@@ -390,6 +390,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
   const app = new Hono()
 
+  const resolveActiveClaudeAuth = async () => {
+    const profile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile)
+    const envOverrides = Object.keys(profile.env).length > 0 ? profile.env : undefined
+    return getClaudeAuthStatusAsync(
+      profile.id !== "default" ? profile.id : undefined,
+      envOverrides,
+    )
+  }
+
   app.use("*", cors())
 
   // Optional API key auth — protects all routes except / and /health
@@ -681,7 +690,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           effort = undefined
           plog(`[PROXY] ${requestMeta.requestId} thinking disabled (per-adapter setting)`)
         } else if (!thinking) {
-          if (sdkFeatures.thinking === "adaptive") thinking = { type: "adaptive" }
+          const requestedModelAlias = requestedModel.toLowerCase()
+          if (
+            adapter.name === "hermes" &&
+            effort !== undefined &&
+            (
+              requestedModelAlias === CANONICAL_SONNET_MODEL ||
+              requestedModelAlias === "sonnet" ||
+              requestedModelAlias === CANONICAL_OPUS_MODEL ||
+              requestedModelAlias === "opus"
+            )
+          ) thinking = { type: "adaptive", display: "summarized" }
+          else if (sdkFeatures.thinking === "adaptive") thinking = { type: "adaptive" }
           else if (sdkFeatures.thinking === "enabled") thinking = { type: "enabled" }
         }
         // When the thinking beta is stripped (e.g. strip-all policy), disable thinking
@@ -2923,13 +2943,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // Health check endpoint — verifies auth status
   app.get("/health", async (c) => {
     try {
-      // Use active profile's auth context for health check
-      const healthProfile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile)
-      const profileEnvOverrides = Object.keys(healthProfile.env).length > 0 ? healthProfile.env : undefined
-      const auth = await getClaudeAuthStatusAsync(
-          healthProfile.id !== "default" ? healthProfile.id : undefined,
-          profileEnvOverrides
-        )
+      const auth = await resolveActiveClaudeAuth()
       if (!auth) {
         return c.json({
           status: "degraded",
@@ -3244,7 +3258,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // Returns available Claude models in OpenAI-compatible format.
   // Context window reflects the subscription tier (Max = 1M, others = 200k).
   app.get("/v1/models", async (c) => {
-    const authStatus = await getClaudeAuthStatusAsync()
+    const authStatus = await resolveActiveClaudeAuth()
     const isMax = authStatus?.subscriptionType === "max"
     return c.json({ object: "list", data: buildModelList(isMax) })
   })

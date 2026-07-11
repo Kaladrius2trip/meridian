@@ -11,6 +11,7 @@ import {
   translateAnthropicSseEvent,
   createSseTranslator,
   buildModelList,
+  type AnthropicToolUseBlock,
 } from "../proxy/openai"
 
 // ---------------------------------------------------------------------------
@@ -324,6 +325,55 @@ describe("translateOpenAiToAnthropic", () => {
       ],
     })
     expect(result).not.toBeNull()
+  })
+
+  it("preserves Hermes tool ID and original instruction across the tool-result turn", () => {
+    const result = translateOpenAiToAnthropic({
+      model: "claude-sonnet-5",
+      messages: [
+        { role: "user", content: "Run terminal and return NONCE_42" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call_42",
+            type: "function",
+            function: { name: "terminal", arguments: '{"command":"printf NONCE_42"}' },
+          }],
+        },
+        { role: "tool", tool_call_id: "call_42", content: "NONCE_42" },
+      ],
+    })
+    expect(JSON.stringify(result)).toContain("Run terminal and return NONCE_42")
+    expect(JSON.stringify(result)).toContain("call_42")
+    expect(JSON.stringify(result)).toContain("NONCE_42")
+  })
+
+  it("copies the assistant tool_use id structurally on a single-turn request", () => {
+    // Single turn means no history packing, so the assistant tool_use block stays
+    // structural and this locks the assistant-side id copy the 3-turn test cannot.
+    const result = translateOpenAiToAnthropic({
+      model: "claude-sonnet-5",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call_42",
+            type: "function",
+            function: { name: "terminal", arguments: '{"command":"printf NONCE_42"}' },
+          }],
+        },
+      ],
+    })
+    if (result === null) throw new Error("expected a translated request")
+    const [firstMessage] = result.messages
+    if (firstMessage === undefined) throw new Error("expected at least one translated message")
+    const content = firstMessage.content
+    if (typeof content === "string") throw new Error("expected structured tool_use content")
+    const toolUse = content.find((b): b is AnthropicToolUseBlock => b.type === "tool_use")
+    expect(toolUse?.id).toBe("call_42")
+    expect(toolUse?.name).toBe("terminal")
   })
 
   // --- assistant message with tool_calls ---
@@ -1226,26 +1276,26 @@ describe("buildModelList", () => {
     expect(fableFree.context_window).toBe(200_000)
   })
 
-  it("Max subscription gets 1M context for all opus variants, 200k for sonnet", () => {
+  it("Max subscription gets 1M context for Sonnet 5 and all opus variants", () => {
     const models = buildModelList(true)
     const sonnet = models.find(m => m.id === "claude-sonnet-5")!
     const opus46 = models.find(m => m.id === "claude-opus-4-6")!
     const opus47 = models.find(m => m.id === "claude-opus-4-7")!
     const opus48 = models.find(m => m.id === "claude-opus-4-8")!
     expect(sonnet.display_name).toBe("Claude Sonnet 5")
-    expect(sonnet.context_window).toBe(200_000)
+    expect(sonnet.context_window).toBe(1_000_000)
     expect(opus46.context_window).toBe(1_000_000)
     expect(opus47.context_window).toBe(1_000_000)
     expect(opus48.context_window).toBe(1_000_000)
   })
 
-  it("non-Max gets 200k context for sonnet and all opus variants", () => {
+  it("non-Max gets 1M context for Sonnet 5 and 200k for all opus variants", () => {
     const models = buildModelList(false)
     const sonnet = models.find(m => m.id === "claude-sonnet-5")!
     const opus46 = models.find(m => m.id === "claude-opus-4-6")!
     const opus47 = models.find(m => m.id === "claude-opus-4-7")!
     const opus48 = models.find(m => m.id === "claude-opus-4-8")!
-    expect(sonnet.context_window).toBe(200_000)
+    expect(sonnet.context_window).toBe(1_000_000)
     expect(opus46.context_window).toBe(200_000)
     expect(opus47.context_window).toBe(200_000)
     expect(opus48.context_window).toBe(200_000)
