@@ -25,6 +25,11 @@ export interface RequestMetric {
    *  memory-extract fork vs. subagent-scout). Truncated to 64 chars. */
   requestSource?: string
 
+  /** Resolved Meridian profile id that served this request (x-meridian-profile
+   *  header → active → default → first). Reflects the final profile after any
+   *  rate-limit auto-switch. Undefined for metrics recorded before this field. */
+  profileId?: string
+
   /** Model used for SDK query (sonnet, opus, haiku, sonnet[1m], etc.) */
   model: string
 
