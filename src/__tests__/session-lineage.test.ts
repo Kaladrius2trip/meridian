@@ -20,7 +20,7 @@ type MockSdkMessage = Record<string, unknown>
 type TestApp = { fetch: (req: Request) => Promise<Response> }
 
 let mockMessages: MockSdkMessage[] = []
-interface CapturedQueryParams { options?: { resume?: string; forkSession?: boolean; resumeSessionAt?: string } }
+interface CapturedQueryParams { prompt?: unknown; options?: { resume?: string; forkSession?: boolean; resumeSessionAt?: string } }
 let capturedQueryParams: CapturedQueryParams | null = null
 /** Access capturedQueryParams without TS narrowing to `never` after null assignments */
 function getCaptured(): CapturedQueryParams | null { return capturedQueryParams }
@@ -310,6 +310,28 @@ describe("Session lineage: undo detection", () => {
     ], "sdk-new")
 
     expect(getCaptured()?.options?.resume).toBeUndefined()
+  })
+
+  it("sends only the latest user correction when a stale assistant tail is appended after it", async () => {
+    const app = createTestApp()
+
+    await post(app, "sess-1", [
+      { role: "user", content: "make latch" },
+      { role: "assistant", content: "working on latch" },
+      { role: "user", content: "add front hole" },
+    ], "sdk-1")
+
+    capturedQueryParams = null
+    await post(app, "sess-1", [
+      { role: "user", content: "make latch" },
+      { role: "assistant", content: "working on latch" },
+      { role: "user", content: "add front hole" },
+      { role: "user", content: "correction: center the lower hole" },
+      { role: "assistant", content: "stale answer from the previous in-flight turn" },
+    ], "sdk-1")
+
+    expect(getCaptured()?.options?.resume).toBe("sdk-1")
+    expect(getCaptured()?.prompt).toBe("Human: correction: center the lower hole")
   })
 
   it("undo forks then subsequent turns resume the fork", async () => {

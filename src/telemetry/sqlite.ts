@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS metrics (
   output_tokens        INTEGER,
   cache_read_input_tokens INTEGER,
   cache_creation_input_tokens INTEGER,
-  cache_hit_rate       REAL
+  cache_hit_rate       REAL,
+  profile              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_metrics_ts    ON metrics(timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_model ON metrics(model);
@@ -50,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_metrics_session_success ON metrics(sdk_session_id
  */
 const METRICS_MIGRATIONS = [
   "ALTER TABLE metrics ADD COLUMN request_source TEXT",
+  "ALTER TABLE metrics ADD COLUMN profile TEXT",
 ]
 
 const LOGS_SCHEMA = `
@@ -101,7 +103,7 @@ class SqliteTelemetryStore implements ITelemetryStore {
         status, queue_wait_ms, proxy_overhead_ms, ttfb_ms,
         upstream_duration_ms, total_duration_ms, content_blocks, text_events, error,
         input_tokens, output_tokens, cache_read_input_tokens,
-        cache_creation_input_tokens, cache_hit_rate
+        cache_creation_input_tokens, cache_hit_rate, profile
       ) VALUES (
         @requestId, @timestamp, @adapter, @requestSource, @model, @requestModel, @mode,
         @isResume, @isPassthrough, @lineageType,
@@ -110,7 +112,7 @@ class SqliteTelemetryStore implements ITelemetryStore {
         @status, @queueWaitMs, @proxyOverheadMs, @ttfbMs,
         @upstreamDurationMs, @totalDurationMs, @contentBlocks, @textEvents, @error,
         @inputTokens, @outputTokens, @cacheReadInputTokens,
-        @cacheCreationInputTokens, @cacheHitRate
+        @cacheCreationInputTokens, @cacheHitRate, @profile
       )
     `)
 
@@ -151,6 +153,7 @@ class SqliteTelemetryStore implements ITelemetryStore {
         cacheReadInputTokens: metric.cacheReadInputTokens ?? null,
         cacheCreationInputTokens: metric.cacheCreationInputTokens ?? null,
         cacheHitRate: metric.cacheHitRate ?? null,
+        profile: metric.profileId ?? null,
       })
     } catch (err) {
       console.error("[telemetry] SQLite write failed, skipping:", err)
@@ -338,6 +341,7 @@ function rowToMetric(r: Record<string, unknown>): RequestMetric {
     cacheReadInputTokens: (r.cache_read_input_tokens as number) ?? undefined,
     cacheCreationInputTokens: (r.cache_creation_input_tokens as number) ?? undefined,
     cacheHitRate: (r.cache_hit_rate as number) ?? undefined,
+    profileId: (r.profile as string) ?? undefined,
   }
 }
 

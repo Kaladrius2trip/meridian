@@ -1,7 +1,7 @@
 /**
  * Unit tests for model mapping and utility functions.
  */
-import { afterEach, beforeEach, describe, it, expect, mock } from "bun:test"
+import { afterEach, beforeEach, describe, it, expect } from "bun:test"
 
 import { mapModelToClaudeModel, isClosedControllerError, resetCachedClaudeAuthStatus, stripExtendedContext, hasExtendedContext, recordExtendedContextUnavailable, isExtendedContextKnownUnavailable, resetExtendedContextUnavailable, resolveSdkModelDefaults, CANONICAL_FABLE_MODEL, CANONICAL_OPUS_MODEL, CANONICAL_SONNET_MODEL, CANONICAL_HAIKU_MODEL } from "../proxy/models"
 
@@ -36,6 +36,11 @@ describe("mapModelToClaudeModel", () => {
     // Sonnet [1m] requires Extra Usage on Max — default to 200k to avoid charges
     expect(mapModelToClaudeModel("claude-sonnet-4-6", "max")).toBe("sonnet")
     expect(mapModelToClaudeModel("sonnet", "max")).toBe("sonnet")
+  })
+
+  it("maps sonnet 5 models to sonnet[1m] because Sonnet 5 has native 1M context", () => {
+    expect(mapModelToClaudeModel("claude-sonnet-5", "max")).toBe("sonnet[1m]")
+    expect(mapModelToClaudeModel("claude-sonnet-5", "max", "primary")).toBe("sonnet[1m]")
   })
 
   it("maps sonnet 4.5 models to sonnet (no 1M regardless of subscription)", () => {
@@ -90,6 +95,7 @@ describe("mapModelToClaudeModel", () => {
       process.env.CLAUDE_PROXY_SONNET_MODEL = "sonnet[1m]"
       process.env.MERIDIAN_1M_CONTEXT_SUPPORT = "0"
       expect(mapModelToClaudeModel("sonnet", "max")).toBe("sonnet")
+      expect(mapModelToClaudeModel("claude-sonnet-5", "max")).toBe("sonnet")
     })
 
     it("accepts false/no spellings and the CLAUDE_PROXY_ alias", () => {
@@ -158,9 +164,8 @@ describe("mapModelToClaudeModel", () => {
       expect(mapModelToClaudeModel("claude-haiku-4-5", "max", "subagent")).toBe("haiku")
     })
 
-    it("primary agents get opus[1m] but sonnet (200k) for max subscription", () => {
-      // Opus [1m] is included with Max; Sonnet [1m] requires Extra Usage
-      expect(mapModelToClaudeModel("claude-sonnet-4-6", "max", "primary")).toBe("sonnet")
+    it("primary agents get opus[1m] and Sonnet 5 1M for max subscription", () => {
+      expect(mapModelToClaudeModel("claude-sonnet-5", "max", "primary")).toBe("sonnet[1m]")
       expect(mapModelToClaudeModel("claude-opus-4-6", "max", "primary")).toBe("opus[1m]")
     })
 
@@ -309,6 +314,11 @@ describe("resolveSdkModelDefaults", () => {
     expect(pins.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe(CANONICAL_OPUS_MODEL)
     expect(pins.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(CANONICAL_SONNET_MODEL)
     expect(pins.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe(CANONICAL_HAIKU_MODEL)
+  })
+
+  it("pins sonnet to Claude Sonnet 5 by default", () => {
+    expect(CANONICAL_SONNET_MODEL).toBe("claude-sonnet-5")
+    expect(resolveSdkModelDefaults({}).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5")
   })
 
   it("MERIDIAN_DEFAULT_OPUS_MODEL override wins over the canonical default", () => {

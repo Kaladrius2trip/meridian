@@ -11,6 +11,7 @@ import {
   translateAnthropicSseEvent,
   createSseTranslator,
   buildModelList,
+  type AnthropicToolUseBlock,
 } from "../proxy/openai"
 
 // ---------------------------------------------------------------------------
@@ -114,11 +115,11 @@ describe("translateOpenAiToAnthropic", () => {
     expect(result!.system).toContain("<conversation_history>")
   })
 
-  it("defaults model to claude-sonnet-4-6", () => {
+  it("defaults model to claude-sonnet-5", () => {
     const result = translateOpenAiToAnthropic({
       messages: [{ role: "user", content: "Hi" }],
     })
-    expect(result!.model).toBe("claude-sonnet-4-6")
+    expect(result!.model).toBe("claude-sonnet-5")
   })
 
   it("passes through specified model", () => {
@@ -324,6 +325,55 @@ describe("translateOpenAiToAnthropic", () => {
       ],
     })
     expect(result).not.toBeNull()
+  })
+
+  it("preserves Hermes tool ID and original instruction across the tool-result turn", () => {
+    const result = translateOpenAiToAnthropic({
+      model: "claude-sonnet-5",
+      messages: [
+        { role: "user", content: "Run terminal and return NONCE_42" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call_42",
+            type: "function",
+            function: { name: "terminal", arguments: '{"command":"printf NONCE_42"}' },
+          }],
+        },
+        { role: "tool", tool_call_id: "call_42", content: "NONCE_42" },
+      ],
+    })
+    expect(JSON.stringify(result)).toContain("Run terminal and return NONCE_42")
+    expect(JSON.stringify(result)).toContain("call_42")
+    expect(JSON.stringify(result)).toContain("NONCE_42")
+  })
+
+  it("copies the assistant tool_use id structurally on a single-turn request", () => {
+    // Single turn means no history packing, so the assistant tool_use block stays
+    // structural and this locks the assistant-side id copy the 3-turn test cannot.
+    const result = translateOpenAiToAnthropic({
+      model: "claude-sonnet-5",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call_42",
+            type: "function",
+            function: { name: "terminal", arguments: '{"command":"printf NONCE_42"}' },
+          }],
+        },
+      ],
+    })
+    if (result === null) throw new Error("expected a translated request")
+    const [firstMessage] = result.messages
+    if (firstMessage === undefined) throw new Error("expected at least one translated message")
+    const content = firstMessage.content
+    if (typeof content === "string") throw new Error("expected structured tool_use content")
+    const toolUse = content.find((b): b is AnthropicToolUseBlock => b.type === "tool_use")
+    expect(toolUse?.id).toBe("call_42")
+    expect(toolUse?.name).toBe("terminal")
   })
 
   // --- assistant message with tool_calls ---
@@ -744,6 +794,28 @@ describe("translateAnthropicToOpenAi", () => {
     expect(result.usage.total_tokens).toBe(0)
   })
 
+  it("preserves Anthropic cache usage for OpenAI-compatible clients", () => {
+    const result = translateAnthropicToOpenAi(
+      {
+        content: [{ type: "text", text: "cached" }],
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 8,
+          output_tokens: 454,
+          cache_read_input_tokens: 182_000,
+          cache_creation_input_tokens: 525,
+        },
+      },
+      ID, MODEL, CREATED
+    )
+
+    expect(result.usage.prompt_tokens).toBe(182_533)
+    expect(result.usage.completion_tokens).toBe(454)
+    expect(result.usage.total_tokens).toBe(182_987)
+    expect(result.usage.cache_read_input_tokens).toBe(182_000)
+    expect(result.usage.cache_creation_input_tokens).toBe(525)
+  })
+
   // --- tool_use blocks ---
 
   it("tool_use block → tool_calls on message", () => {
@@ -1149,6 +1221,34 @@ describe("createSseTranslator", () => {
     expect(chunks[4]!.choices[0]!.delta.tool_calls![0]!.index).toBe(0)
     expect(chunks[5]!.choices[0]!.finish_reason).toBe("tool_calls")
   })
+
+  it("buildUsageChunk returns null when includeUsage was not requested", () => {
+    const translate = createSseTranslator(CTX)
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 10, output_tokens: 5 } })
+    expect(translate.buildUsageChunk()).toBeNull()
+  })
+
+  it("buildUsageChunk returns null when no message_delta.usage was observed", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" } })
+    expect(translate.buildUsageChunk()).toBeNull()
+  })
+
+  it("buildUsageChunk returns a populated trailing chunk with empty choices when requested", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 132, output_tokens: 37 } })
+    const chunk = translate.buildUsageChunk()
+    expect(chunk).not.toBeNull()
+    expect(chunk!.choices).toEqual([])
+    expect(chunk!.usage).toEqual({ prompt_tokens: 132, completion_tokens: 37, total_tokens: 169 })
+  })
+
+  it("buildUsageChunk uses the latest message_delta.usage if multiple arrive", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { input_tokens: 100, output_tokens: 10 } })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 100, output_tokens: 42 } })
+    expect(translate.buildUsageChunk()!.usage).toEqual({ prompt_tokens: 100, completion_tokens: 42, total_tokens: 142 })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1176,28 +1276,57 @@ describe("buildModelList", () => {
     expect(fableFree.context_window).toBe(200_000)
   })
 
-  it("Max subscription gets 1M context for all opus variants, 200k for sonnet", () => {
+  it("Max subscription gets 1M context for Sonnet 5 and all opus variants", () => {
     const models = buildModelList(true)
-    const sonnet = models.find(m => m.id === "claude-sonnet-4-6")!
+    const sonnet = models.find(m => m.id === "claude-sonnet-5")!
     const opus46 = models.find(m => m.id === "claude-opus-4-6")!
     const opus47 = models.find(m => m.id === "claude-opus-4-7")!
     const opus48 = models.find(m => m.id === "claude-opus-4-8")!
-    expect(sonnet.context_window).toBe(200_000)
+    expect(sonnet.display_name).toBe("Claude Sonnet 5")
+    expect(sonnet.context_window).toBe(1_000_000)
     expect(opus46.context_window).toBe(1_000_000)
     expect(opus47.context_window).toBe(1_000_000)
     expect(opus48.context_window).toBe(1_000_000)
   })
 
-  it("non-Max gets 200k context for sonnet and all opus variants", () => {
+  it("non-Max gets 1M context for Sonnet 5 and 200k for all opus variants", () => {
     const models = buildModelList(false)
-    const sonnet = models.find(m => m.id === "claude-sonnet-4-6")!
+    const sonnet = models.find(m => m.id === "claude-sonnet-5")!
     const opus46 = models.find(m => m.id === "claude-opus-4-6")!
     const opus47 = models.find(m => m.id === "claude-opus-4-7")!
     const opus48 = models.find(m => m.id === "claude-opus-4-8")!
-    expect(sonnet.context_window).toBe(200_000)
+    expect(sonnet.context_window).toBe(1_000_000)
     expect(opus46.context_window).toBe(200_000)
     expect(opus47.context_window).toBe(200_000)
     expect(opus48.context_window).toBe(200_000)
+  })
+
+  // #498: Home Assistant 2026.5's Anthropic integration reads
+  // capabilities.image_input to decide whether image attachments are allowed;
+  // an absent capabilities field rejected all images locally.
+  it("populates capabilities on every model (image_input.supported)", () => {
+    for (const model of buildModelList(true)) {
+      expect(model.capabilities).toBeDefined()
+      expect(model.capabilities!.image_input.supported).toBe(true)
+      expect(model.capabilities!.pdf_input.supported).toBe(true)
+    }
+  })
+
+  it("matches the Anthropic Models API capabilities shape", () => {
+    const caps = buildModelList(true)[0]!.capabilities!
+    // Top-level capability groups present per the /v1/models schema.
+    expect(caps.batch.supported).toBe(true)
+    expect(caps.citations.supported).toBe(true)
+    expect(caps.code_execution.supported).toBe(true)
+    expect(caps.structured_outputs.supported).toBe(true)
+    // Nested groups carry their own `supported` flag plus sub-strategies.
+    expect(caps.context_management.supported).toBe(true)
+    expect(caps.context_management.clear_tool_uses_20250919.supported).toBe(true)
+    expect(caps.effort.supported).toBe(true)
+    expect(caps.effort.high.supported).toBe(true)
+    expect(caps.thinking.supported).toBe(true)
+    expect(caps.thinking.types.adaptive.supported).toBe(true)
+    expect(caps.thinking.types.enabled.supported).toBe(true)
   })
 
   it("haiku is always 200k regardless of subscription", () => {

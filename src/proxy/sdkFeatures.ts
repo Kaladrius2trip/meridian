@@ -78,6 +78,10 @@ const ADAPTER_DEFAULTS: Record<string, Partial<AdapterFeatures>> = {
   openai: {
     codeSystemPrompt: false,
   },
+  hermes: {
+    codeSystemPrompt: false,
+    thinkingPassthrough: true,
+  },
 }
 
 function getConfigPath(): string {
@@ -159,7 +163,7 @@ export function getExplicitThinking(adapterName: string): AdapterFeatures["think
  * Get the full config for all adapters (for the settings UI).
  */
 export function getAllFeatureConfigs(): Record<string, AdapterFeatures> {
-  const adapters = ["opencode", "crush", "forgecode", "pi", "droid", "passthrough", "openai"]
+  const adapters = ["opencode", "crush", "forgecode", "pi", "droid", "passthrough", "openai", "hermes"]
   const result: Record<string, AdapterFeatures> = {}
   for (const name of adapters) {
     result[name] = getFeaturesForAdapter(name)

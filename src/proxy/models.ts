@@ -42,7 +42,7 @@ export type ClaudeModel = "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku
  */
 export const CANONICAL_FABLE_MODEL = "claude-fable-5"
 export const CANONICAL_OPUS_MODEL = "claude-opus-4-8"
-export const CANONICAL_SONNET_MODEL = "claude-sonnet-4-6"
+export const CANONICAL_SONNET_MODEL = "claude-sonnet-5"
 export const CANONICAL_HAIKU_MODEL = "claude-haiku-4-5"
 
 /**
@@ -99,7 +99,7 @@ function supports1mContext(model: string): boolean {
   return true
 }
 
-export function mapModelToClaudeModel(model: string, subscriptionType?: string | null, agentMode?: string | null): ClaudeModel {
+export function mapModelToClaudeModel(model: string, _subscriptionType?: string | null, agentMode?: string | null): ClaudeModel {
   if (model.includes("haiku")) return "haiku"
 
   const use1m = supports1mContext(model)
@@ -128,10 +128,11 @@ export function mapModelToClaudeModel(model: string, subscriptionType?: string |
     return "opus"
   }
 
-  // Sonnet [1m]: requires Extra Usage on Max plans per Anthropic docs.
-  // Unlike Opus, Sonnet 1M is NOT included with the Max subscription —
-  // it is always billed as Extra Usage. Default to sonnet (200k) to
-  // avoid unexpected charges. Users opt in via MERIDIAN_SONNET_MODEL=sonnet[1m].
+  // Sonnet 5 has a native 1M context window with no usage credits required.
+  // Behind gateways Claude Code budgets 200k unless the 1M variant is selected.
+  if (model.includes("sonnet-5") && use1m && !isSubagent) return "sonnet[1m]"
+
+  // Sonnet 4.6 [1m] still requires explicit opt-in.
   const sonnetOverride = process.env.MERIDIAN_SONNET_MODEL ?? process.env.CLAUDE_PROXY_SONNET_MODEL
   if (sonnetOverride === "sonnet[1m]") {
     if (!use1m || isSubagent || isExtendedContextKnownUnavailable()) return "sonnet"

@@ -15,6 +15,7 @@ import { piAdapter } from "./pi"
 import { forgeCodeAdapter } from "./forgecode"
 import { claudeCodeAdapter } from "./claudecode"
 import { openAiAdapter } from "./openai"
+import { hermesAdapter } from "./hermes"
 
 const ADAPTER_MAP: Record<string, AgentAdapter> = {
   opencode: openCodeAdapter,
@@ -28,6 +29,7 @@ const ADAPTER_MAP: Record<string, AgentAdapter> = {
   // Generic OpenAI-compatible endpoint (/v1/chat/completions). Selected via
   // the x-meridian-agent: openai tag the handler sets on the internal hop.
   openai: openAiAdapter,
+  hermes: hermesAdapter,
 }
 
 const envDefault = process.env.MERIDIAN_DEFAULT_AGENT || ""
