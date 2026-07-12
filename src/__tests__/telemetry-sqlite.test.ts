@@ -216,6 +216,18 @@ describe("SqliteTelemetryStore", () => {
     expect(recent[0]!.requestId).toBe("survive")
     stores2.close()
   })
+
+  it("round-trips profileId through the DB", () => {
+    store.record(makeMetric({ requestId: "prof-1", profileId: "work" }))
+    const [retrieved] = store.getRecent()
+    expect(retrieved!.profileId).toBe("work")
+  })
+
+  it("omitted profileId reads back as undefined", () => {
+    store.record(makeMetric({ requestId: "prof-2" }))
+    const [retrieved] = store.getRecent()
+    expect(retrieved!.profileId).toBeUndefined()
+  })
 })
 
 describe("SqliteDiagnosticLogStore", () => {
