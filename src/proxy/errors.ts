@@ -33,15 +33,19 @@ export function classifyError(errMsg: string): ClassifiedError {
     }
   }
 
-  // Rate limiting
-  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests")) {
-    const hint = lower.includes("1m") || lower.includes("context")
+  // Rate limiting, incl. Claude Max session-limit quota caps ("session limit").
+  // Same strings gate the multi-profile auto-switch (isRateLimitError, server.ts).
+  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("session limit")) {
+    const sessionLimit = lower.includes("session limit")
+    const hint = !sessionLimit && (lower.includes("1m") || lower.includes("context"))
       ? " If you're frequently hitting this, set MERIDIAN_SONNET_MODEL=sonnet to use the 200k model instead."
       : ""
     return {
       status: 429,
       type: "rate_limit_error",
-      message: `Claude Max rate limit reached. Wait a moment and try again.${hint}`
+      message: sessionLimit
+        ? "Claude Max session limit reached on all available profiles. Wait for the reset shown in your client, switch to a profile with remaining quota, or enable Extra Usage."
+        : `Claude Max rate limit reached. Wait a moment and try again.${hint}`
     }
   }
 
@@ -168,11 +172,17 @@ export function isStaleSessionError(error: unknown): boolean {
 
 /**
  * Quick check whether an error message indicates a rate limit.
- * Used by server.ts to decide whether to retry with a smaller context window.
+ * Used by server.ts to decide whether to retry with a smaller context window
+ * AND to trigger the multi-profile auto-switch (server.ts:1406-1439 / 1970-2005).
+ *
+ * "session limit" covers the Claude Max 5-hour quota cap ("You've hit your
+ * session limit · resets …"). It is account-wide, so switching to another Max
+ * profile is the effective remedy — without this substring the switch never
+ * fires and the client just retries the capped account.
  */
 export function isRateLimitError(errMsg: string): boolean {
   const lower = errMsg.toLowerCase()
-  return lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests")
+  return lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("session limit")
 }
 
 /**
