@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test"
+import {
+  enableQueryGating,
+  enterGatedCall,
+  releaseCall,
+  resetQueryGating,
+  waitForActiveCalls,
+} from "./affinity-query-gate"
 
 type QueryOptions = {
   readonly options?: {
@@ -14,22 +21,25 @@ let consumedRateLimitDirs = new Set<string>()
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (opts: QueryOptions) => {
     queryCallCount += 1
+    const callNumber = queryCallCount
     const configDir = opts.options?.env?.CLAUDE_CONFIG_DIR
     claudeConfigDirs.push(configDir)
 
-    if (configDir !== undefined && rateLimitOnceDirs.has(configDir) && !consumedRateLimitDirs.has(configDir)) {
-      consumedRateLimitDirs.add(configDir)
-      return (async function* () {
-        throw new Error("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
-      })()
-    }
-
     return (async function* () {
+      const gatedOutcome = await enterGatedCall(configDir)
+      if (gatedOutcome === "rate_limit") {
+        throw new Error("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
+      }
+      if (gatedOutcome === undefined && configDir !== undefined && rateLimitOnceDirs.has(configDir) && !consumedRateLimitDirs.has(configDir)) {
+        consumedRateLimitDirs.add(configDir)
+        throw new Error("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
+      }
+
       yield {
         type: "assistant",
-        uuid: `uuid-${queryCallCount}`,
+        uuid: `uuid-${callNumber}`,
         message: {
-          id: `msg-${queryCallCount}`,
+          id: `msg-${callNumber}`,
           type: "message",
           role: "assistant",
           content: [{ type: "text", text: "ok" }],
@@ -37,7 +47,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
           stop_reason: "end_turn",
           usage: { input_tokens: 10, output_tokens: 5 },
         },
-        session_id: `sdk-session-${queryCallCount}`,
+        session_id: `sdk-session-${callNumber}`,
       }
     })()
   },
@@ -99,6 +109,7 @@ describe("Session profile affinity", () => {
     queryCallCount = 0
     rateLimitOnceDirs = new Set<string>()
     consumedRateLimitDirs = new Set<string>()
+    resetQueryGating()
   })
 
   it("keeps one root on its profile and spreads a new root", async () => {
@@ -173,6 +184,70 @@ describe("Session profile affinity", () => {
       "/profiles/work",
       "/profiles/work",
       "/profiles/personal",
+    ])
+  })
+
+  it("keeps an ABA-stale request on its original profile when the mapping returns to it", async () => {
+    const app = createTestApp(["personal", "work"])
+    enableQueryGating()
+
+    const stale = postMessage(app, { "x-opencode-root-session": "R" }, "stale")
+    await waitForActiveCalls(1)
+    const move1 = postMessage(app, { "x-opencode-root-session": "R" }, "move one")
+    await waitForActiveCalls(2)
+
+    releaseCall(1, "rate_limit")
+    await waitForActiveCalls(3)
+    releaseCall(2, "ok")
+    expect((await move1).status).toBe(200)
+
+    const move2 = postMessage(app, { "x-opencode-root-session": "R" }, "move two")
+    await waitForActiveCalls(4)
+    releaseCall(3, "rate_limit")
+    await waitForActiveCalls(5)
+    releaseCall(4, "ok")
+    expect((await move2).status).toBe(200)
+
+    releaseCall(0, "rate_limit")
+    await waitForActiveCalls(6)
+    releaseCall(5, "ok")
+    expect((await stale).status).toBe(200)
+    expect([claudeConfigDirs[0], claudeConfigDirs[5]]).toEqual([
+      "/profiles/personal",
+      "/profiles/personal",
+    ])
+  })
+
+  it("converges concurrent rate-limited requests on one relocated profile", async () => {
+    const app = createTestApp(["personal", "work"])
+    enableQueryGating()
+
+    const request1 = postMessage(app, { "x-opencode-root-session": "R" }, "one")
+    await waitForActiveCalls(1)
+    const request2 = postMessage(app, { "x-opencode-root-session": "R" }, "two")
+    const request3 = postMessage(app, { "x-opencode-root-session": "R" }, "three")
+    await waitForActiveCalls(3)
+
+    releaseCall(0, "rate_limit")
+    await waitForActiveCalls(4)
+    releaseCall(3, "ok")
+    expect((await request1).status).toBe(200)
+
+    releaseCall(1, "rate_limit")
+    releaseCall(2, "rate_limit")
+    await waitForActiveCalls(6)
+    releaseCall(4, "ok")
+    releaseCall(5, "ok")
+    const responses = await Promise.all([request2, request3])
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200])
+    expect(claudeConfigDirs).toEqual([
+      "/profiles/personal",
+      "/profiles/personal",
+      "/profiles/personal",
+      "/profiles/work",
+      "/profiles/work",
+      "/profiles/work",
     ])
   })
 })
