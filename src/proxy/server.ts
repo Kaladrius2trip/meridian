@@ -80,6 +80,7 @@ import {
 // Re-export for backwards compatibility (existing tests import from here)
 
 import { lookupSession, storeSession, clearSessionCache, getMaxSessionsLimit, evictSession, getSessionByClaudeId } from "./session/cache"
+import { selectProfileForRoot } from "./session/affinity"
 import { lookupSessionRecovery, listStoredSessions } from "./sessionStore"
 // Re-export for backwards compatibility (existing tests import from here)
 export { computeLineageHash, hashMessage, computeMessageHashes }
@@ -382,6 +383,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // invalidation from MCP server re-creation. Key hashes tool name + schema
   // so silently-updated tool definitions force a rebuild.
   const sessionMcpCache = new LRUMap<string, { key: string; mcp: ReturnType<typeof createPassthroughMcpServer> }>(getMaxSessionsLimit())
+  const affinityMap = new LRUMap<string, string>(getMaxSessionsLimit())
 
   const pluginDir = finalConfig.pluginDir ?? join(homedir(), ".config", "meridian", "plugins")
   const pluginConfigPath = finalConfig.pluginConfigPath ?? join(homedir(), ".config", "meridian", "plugins.json")
@@ -507,8 +509,47 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
         const outputFormat = parsedOutputFormat.value
 
-        // Resolve profile: header > active > default > first configured
-        const requestedProfileId = c.req.header("x-meridian-profile") || undefined
+        const explicitProfileId = c.req.header("x-meridian-profile") || undefined
+        const rootSessionId = c.req.header("x-opencode-root-session")
+          || c.req.header("x-opencode-session")
+          || undefined
+        let requestedProfileId = explicitProfileId
+        if (rootSessionId) {
+          const eligible = getEffectiveProfiles(finalConfig.profiles)
+            .filter((candidate) => (candidate.type ?? "claude-max") !== "api")
+            .map((candidate) => candidate.id)
+          // Skip affinity when no eligible (non-api) profiles exist: selectProfileForRoot
+          // would throw with nothing to distribute, and resolveProfile's own fallback
+          // already handles the profile-less / implicit-default case.
+          if (eligible.length > 0) {
+            const storedProfileId = affinityMap.get(rootSessionId)
+            const mappedProfileId = storedProfileId && eligible.includes(storedProfileId)
+              ? storedProfileId
+              : undefined
+            if (storedProfileId && !mappedProfileId) affinityMap.delete(rootSessionId)
+
+            const counts: Record<string, number> = {}
+            for (const profileId of affinityMap.values()) {
+              counts[profileId] = (counts[profileId] ?? 0) + 1
+            }
+
+            const activeId = getActiveProfileId()
+            const defaultId = finalConfig.defaultProfile ?? eligible[0]
+            const { profileId, firstSeen } = selectProfileForRoot({
+              counts,
+              eligible,
+              ...(explicitProfileId ? { explicit: explicitProfileId } : {}),
+              ...(mappedProfileId ? { mapped: mappedProfileId } : {}),
+              ...(activeId ? { activeId } : {}),
+              ...(defaultId ? { defaultId } : {}),
+            })
+            requestedProfileId = profileId
+
+            if (firstSeen && !explicitProfileId) {
+              affinityMap.set(rootSessionId, profileId)
+            }
+          }
+        }
         let profile = resolveProfile(
           finalConfig.profiles,
           finalConfig.defaultProfile,
@@ -3189,6 +3230,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     if (authz) internalHeaders["authorization"] = authz
     const opencodeSession = c.req.header("x-opencode-session")
     if (opencodeSession) internalHeaders["x-opencode-session"] = opencodeSession
+    const opencodeRootSession = c.req.header("x-opencode-root-session")
+    if (opencodeRootSession) internalHeaders["x-opencode-root-session"] = opencodeRootSession
     const hermesSession = c.req.header("x-hermes-session")
     if (hermesSession) internalHeaders["x-hermes-session"] = hermesSession
     const sessionAffinity = c.req.header("x-session-affinity")
