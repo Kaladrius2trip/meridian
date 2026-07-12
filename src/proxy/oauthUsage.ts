@@ -73,12 +73,49 @@ export interface OAuthUsageSnapshot {
   fetchedAt: number
 }
 
+export interface UsageResponse {
+  windows: OAuthUsageWindow[]
+  extraUsage: OAuthExtraUsageInfo | null
+  fetchedAt: number | null
+  stale: boolean
+  error?: string
+}
+
+export function resolveUsageResponse(
+  lastGood: OAuthUsageSnapshot | null,
+  fresh: OAuthUsageSnapshot | null,
+): UsageResponse {
+  if (fresh) {
+    return {
+      windows: fresh.windows,
+      extraUsage: fresh.extraUsage,
+      fetchedAt: fresh.fetchedAt,
+      stale: false,
+    }
+  }
+  if (lastGood) {
+    return {
+      windows: lastGood.windows,
+      extraUsage: lastGood.extraUsage,
+      fetchedAt: lastGood.fetchedAt,
+      stale: true,
+    }
+  }
+  return { windows: [], extraUsage: null, fetchedAt: null, stale: false, error: "no_token" }
+}
+
 const CACHE_TTL_MS_DEFAULT = 30_000
+const FORCE_COOLDOWN_MS = 5_000
 
 /** Per-profile cache. Key = profileId (or DEFAULT_KEY for the unscoped default). */
 const cacheByProfile = new Map<string, OAuthUsageSnapshot>()
 const inflightByProfile = new Map<string, Promise<OAuthUsageSnapshot | null>>()
+const lastForcedByProfile = new Map<string, number>()
 const DEFAULT_KEY = "__default__"
+
+export function getLastKnownUsage(profileId?: string | null): OAuthUsageSnapshot | null {
+  return cacheByProfile.get(profileId ?? DEFAULT_KEY) ?? null
+}
 
 const WINDOW_TYPES: Array<keyof RawOAuthUsageResponse> = [
   "five_hour",
@@ -221,6 +258,14 @@ async function fetchOAuthUsageImpl(opts?: FetchOAuthUsageOpts): Promise<OAuthUsa
   }
   const existing = inflightByProfile.get(cacheKey)
   if (existing) return existing
+  if (opts?.force) {
+    const now = Date.now()
+    const lastForced = lastForcedByProfile.get(cacheKey)
+    if (lastForced !== undefined && now - lastForced < FORCE_COOLDOWN_MS) {
+      return cacheByProfile.get(cacheKey) ?? null
+    }
+    lastForcedByProfile.set(cacheKey, now)
+  }
 
   const store = opts?.store ?? createPlatformCredentialStore({ claudeConfigDir: opts?.claudeConfigDir })
 
@@ -265,4 +310,5 @@ async function fetchOAuthUsageImpl(opts?: FetchOAuthUsageOpts): Promise<OAuthUsa
 export function resetOAuthUsageCache(): void {
   cacheByProfile.clear()
   inflightByProfile.clear()
+  lastForcedByProfile.clear()
 }
