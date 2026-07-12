@@ -200,4 +200,16 @@ describe("Telemetry routes", () => {
     expect(body).not.toContain("NaN")
     expect(body).not.toContain("undefined")
   })
+
+  it("GET /telemetry dashboard includes Profile column header", async () => {
+    const res = await app.fetch(new Request("http://localhost/telemetry"))
+    const html = await res.text()
+    expect(html).toContain("<th>Profile</th>")
+  })
+
+  it("GET /telemetry dashboard renders profileId value and fallback in JS", async () => {
+    const res = await app.fetch(new Request("http://localhost/telemetry"))
+    const html = await res.text()
+    expect(html).toContain("r.profileId")
+  })
 })
