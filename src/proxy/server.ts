@@ -80,7 +80,7 @@ import {
 // Re-export for backwards compatibility (existing tests import from here)
 
 import { lookupSession, storeSession, clearSessionCache, getMaxSessionsLimit, evictSession, getSessionByClaudeId } from "./session/cache"
-import { selectProfileForRoot } from "./session/affinity"
+import { relocate, selectProfileForRoot } from "./session/affinity"
 import { lookupSessionRecovery, listStoredSessions } from "./sessionStore"
 // Re-export for backwards compatibility (existing tests import from here)
 export { computeLineageHash, hashMessage, computeMessageHashes }
@@ -844,10 +844,33 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let currentUndoRollbackUuid = undoRollbackUuid
         let needsFreshPrompt = false
         let didProfileFallback = false
+        let forceFreshPrompt = false
 
         const switchToNextProfile = (mode: "non_stream" | "stream"): boolean => {
-          if (requestedProfileId || didProfileFallback) return false
-          const nextProfile = resolveNextNonApiProfile(finalConfig, profile.id)
+          if (explicitProfileId || didProfileFallback) return false
+
+          let nextProfile: ResolvedProfile | undefined
+          if (rootSessionId) {
+            const eligible = getEffectiveProfiles(finalConfig.profiles)
+              .filter((candidate) => (candidate.type ?? "claude-max") !== "api")
+              .map((candidate) => candidate.id)
+            // A concurrent request may have already relocated this root — join that
+            // target instead of relocating a second time, so the whole session tree
+            // converges on one account.
+            const alreadyMoved = affinityMap.get(rootSessionId)
+            let targetId: string
+            if (alreadyMoved && alreadyMoved !== profile.id && eligible.includes(alreadyMoved)) {
+              targetId = alreadyMoved
+            } else {
+              const counts: Record<string, number> = {}
+              for (const id of affinityMap.values()) counts[id] = (counts[id] ?? 0) + 1
+              targetId = relocate(profile.id, counts, eligible)
+              if (targetId === profile.id) return false
+            }
+            nextProfile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile, targetId)
+          } else {
+            nextProfile = resolveNextNonApiProfile(finalConfig, profile.id)
+          }
           if (!nextProfile) return false
 
           const previousProfileId = profile.id
@@ -867,8 +890,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // SDK session, so the retry must replay the full conversation.
           needsFreshPrompt = true
           didProfileFallback = true
-          setActiveProfile(profile.id)
-          rateLimitStore.clear()
+          forceFreshPrompt = true
+          if (rootSessionId) {
+            // Sticky per-root move: retarget only this session tree. Never flip the
+            // global active profile or clear the shared rate-limit snapshot — those
+            // belong to headerless clients handled by the branch below.
+            affinityMap.set(rootSessionId, profile.id)
+          } else {
+            setActiveProfile(profile.id)
+            rateLimitStore.clear()
+          }
           claudeLog("profile.auto_switch", { mode, from: previousProfileId, to: profile.id, reason: "rate_limit" })
           plog(`[PROXY] ${requestMeta.requestId} profile ${previousProfileId} rate-limited, retrying with profile ${profile.id}`)
           return true
@@ -1353,7 +1384,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 let didYieldContent = false
                 try {
                   for await (const event of query(buildQueryOptions({
-                    prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
+                    prompt: forceFreshPrompt ? buildFreshPrompt(allMessages, sanitizeOpts) : makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                     passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                     resumeSessionId: currentResumeSessionId, isUndo: currentIsUndo, undoRollbackUuid: currentUndoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, outputFormat, betas, settingSources,
@@ -1941,7 +1972,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   let didYieldClientEvent = false
                   try {
                     for await (const event of query(buildQueryOptions({
-                      prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
+                      prompt: forceFreshPrompt ? buildFreshPrompt(allMessages, sanitizeOpts) : makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                       passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                       resumeSessionId: currentResumeSessionId, isUndo: currentIsUndo, undoRollbackUuid: currentUndoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,

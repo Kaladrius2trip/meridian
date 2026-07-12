@@ -8,11 +8,21 @@ type QueryOptions = {
 
 let claudeConfigDirs: Array<string | undefined> = []
 let queryCallCount = 0
+let rateLimitOnceDirs = new Set<string>()
+let consumedRateLimitDirs = new Set<string>()
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (opts: QueryOptions) => {
     queryCallCount += 1
-    claudeConfigDirs.push(opts.options?.env?.CLAUDE_CONFIG_DIR)
+    const configDir = opts.options?.env?.CLAUDE_CONFIG_DIR
+    claudeConfigDirs.push(configDir)
+
+    if (configDir !== undefined && rateLimitOnceDirs.has(configDir) && !consumedRateLimitDirs.has(configDir)) {
+      consumedRateLimitDirs.add(configDir)
+      return (async function* () {
+        throw new Error("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
+      })()
+    }
 
     return (async function* () {
       yield {
@@ -87,6 +97,8 @@ describe("Session profile affinity", () => {
     clearSessionCache()
     claudeConfigDirs = []
     queryCallCount = 0
+    rateLimitOnceDirs = new Set<string>()
+    consumedRateLimitDirs = new Set<string>()
   })
 
   it("keeps one root on its profile and spreads a new root", async () => {
@@ -145,5 +157,22 @@ describe("Session profile affinity", () => {
 
     expect([withoutRoot.status, firstRoot.status]).toEqual([200, 200])
     expect(claudeConfigDirs).toEqual(["/profiles/work", "/profiles/personal"])
+  })
+
+  it("relocates a rate-limited root's whole tree, sticky, without moving other roots", async () => {
+    const app = createTestApp(["personal", "work"])
+    rateLimitOnceDirs.add("/profiles/personal")
+
+    const moved = await postMessage(app, { "x-opencode-root-session": "MOVE" }, "root move")
+    const movedAgain = await postMessage(app, { "x-opencode-root-session": "MOVE" }, "root move again")
+    const kept = await postMessage(app, { "x-opencode-root-session": "KEEP" }, "root keep")
+
+    expect([moved.status, movedAgain.status, kept.status]).toEqual([200, 200, 200])
+    expect(claudeConfigDirs).toEqual([
+      "/profiles/personal",
+      "/profiles/work",
+      "/profiles/work",
+      "/profiles/personal",
+    ])
   })
 })
