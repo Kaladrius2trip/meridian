@@ -280,8 +280,11 @@ function renderUsageSection(profileQuota) {
     return ''; // nothing fetched yet
   }
 
+  // stale:true is a retained last-known snapshot (server kept it after a failed
+  // refresh); mark it but keep showing the usage since the data is still present.
+  var staleMarker = profileQuota.stale ? '<span style="color:var(--yellow)"> \u00b7 stale</span>' : '';
   var asOf = profileQuota.fetchedAt
-    ? '<span class="usage-as-of">updated ' + timeAgo(profileQuota.fetchedAt) + '</span>'
+    ? '<span class="usage-as-of">updated ' + timeAgo(profileQuota.fetchedAt) + staleMarker + '</span>'
     : '';
 
   var cards = windows.map(function (w) {
@@ -344,7 +347,11 @@ function render(data, quotaData) {
     return;
   }
 
-  let html = '<div class="section"><div class="section-title">Configured Profiles</div>';
+  let html = '<div class="section">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">'
+    +   '<div class="section-title" style="margin-bottom:0">Configured Profiles</div>'
+    +   '<button class="switch-btn" style="margin-top:0" onclick="refreshUsage(this)">Refresh usage</button>'
+    + '</div>';
 
   for (const p of profiles) {
     const isActive = p.id === active;
@@ -436,6 +443,21 @@ async function switchProfile(id) {
   });
   const data = await res.json();
   if (data.success) refresh();
+}
+
+async function refreshUsage(btn) {
+  var original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '\u2026';
+  try {
+    await fetch('/v1/usage/quota/refresh?profile=all', { method: 'POST' });
+    await refresh();
+  } catch (_) {
+    // intentional: next poll re-renders regardless; finally restores the button.
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 refresh();
