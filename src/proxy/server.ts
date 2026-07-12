@@ -475,6 +475,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return withClaudeLogContext({ requestId: requestMeta.requestId, endpoint: requestMeta.endpoint }, async () => {
       // Hoist adapter detection before try so it's available in the catch block for telemetry
       const adapter = detectAdapter(c)
+      let resolvedProfileId: string | undefined
       try {
         const body = await c.req.json()
 
@@ -513,6 +514,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           finalConfig.defaultProfile,
           requestedProfileId
         )
+        resolvedProfileId = profile.id
 
         const authStatus = await getClaudeAuthStatusAsync(
           profile.id !== "default" ? profile.id : undefined,
@@ -799,6 +801,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
           const previousProfileId = profile.id
           profile = nextProfile
+          resolvedProfileId = profile.id
           profileEnv = { ...sdkModelDefaults, ...cleanEnv, ...profile.env }
           profileCredentialStore = credentialStoreForProfile(profile)
           profileSessionId = profile.id !== "default" && agentSessionId
@@ -826,7 +829,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const lineageType = lineageResult.type === "diverged" && !cachedSession ? "new" : lineageResult.type
         const msgCount = Array.isArray(body.messages) ? body.messages.length : 0
         const toolCount = body.tools?.length ?? 0
-        const requestLogLine = `${requestMeta.requestId} adapter=${adapter.name}${requestSource ? ` source=${requestSource}` : ""} model=${model} stream=${stream} tools=${toolCount} lineage=${lineageType} session=${resumeSessionId?.slice(0, 8) || "new"}${isUndo && undoRollbackUuid ? ` rollback=${undoRollbackUuid.slice(0, 8)}` : ""}${agentMode ? ` agent=${agentMode}` : ""} active=${activeSessions}/${MAX_CONCURRENT_SESSIONS} msgCount=${msgCount}`
+        const requestLogLine = `${requestMeta.requestId} adapter=${adapter.name}${requestSource ? ` source=${requestSource}` : ""} model=${model} stream=${stream} tools=${toolCount} lineage=${lineageType} session=${resumeSessionId?.slice(0, 8) || "new"}${isUndo && undoRollbackUuid ? ` rollback=${undoRollbackUuid.slice(0, 8)}` : ""}${agentMode ? ` agent=${agentMode}` : ""} active=${activeSessions}/${MAX_CONCURRENT_SESSIONS} msgCount=${msgCount} profile=${profile.id}`
         plog(`[PROXY] ${requestLogLine} msgs=${msgSummary}`)
         diagnosticLog.session(`${requestLogLine}`, requestMeta.requestId)
 
@@ -1717,6 +1720,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             timestamp: Date.now(),
             adapter: adapter.name,
             requestSource,
+            profileId: resolvedProfileId,
             model,
             requestModel: body.model || undefined,
             mode: "non-stream",
@@ -2539,6 +2543,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   timestamp: Date.now(),
                   adapter: adapter.name,
             requestSource,
+                  profileId: resolvedProfileId,
                   model,
                   requestModel: body.model || undefined,
                   mode: "stream",
@@ -2709,6 +2714,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   timestamp: Date.now(),
                   adapter: adapter.name,
                   requestSource,
+                  profileId: resolvedProfileId,
                   model,
                   requestModel: body.model || undefined,
                   mode: "stream",
@@ -2759,6 +2765,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 timestamp: Date.now(),
                 adapter: adapter.name,
                 requestSource,
+                profileId: resolvedProfileId,
                 model,
                 requestModel: body.model || undefined,
                 mode: "stream",
@@ -2852,6 +2859,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           requestId: requestMeta.requestId,
           timestamp: Date.now(),
           adapter: adapter.name,
+          profileId: resolvedProfileId,
           model: "unknown",
           requestModel: undefined,
           mode: "non-stream",
