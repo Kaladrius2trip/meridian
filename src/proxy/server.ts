@@ -383,7 +383,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // invalidation from MCP server re-creation. Key hashes tool name + schema
   // so silently-updated tool definitions force a rebuild.
   const sessionMcpCache = new LRUMap<string, { key: string; mcp: ReturnType<typeof createPassthroughMcpServer> }>(getMaxSessionsLimit())
-  const affinityMap = new LRUMap<string, string>(getMaxSessionsLimit())
+  // Instance-local root-session -> {profile, generation} affinity. Bounded by
+  // getMaxSessionsLimit(): once that many distinct roots are live the least-recently
+  // used mapping is evicted and its next request re-picks a profile. That is a
+  // bounded-stickiness ceiling, acceptable for the handful of concurrent roots a
+  // single user drives; revisit with lifecycle-aware retention if roots approach it.
+  const affinityMap = new LRUMap<string, { profileId: string; generation: number }>(getMaxSessionsLimit())
 
   const pluginDir = finalConfig.pluginDir ?? join(homedir(), ".config", "meridian", "plugins")
   const pluginConfigPath = finalConfig.pluginConfigPath ?? join(homedir(), ".config", "meridian", "plugins.json")
@@ -514,6 +519,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           || c.req.header("x-opencode-session")
           || undefined
         let requestedProfileId = explicitProfileId
+        let observedAffinityGeneration = 0
         if (rootSessionId) {
           const eligible = getEffectiveProfiles(finalConfig.profiles)
             .filter((candidate) => (candidate.type ?? "claude-max") !== "api")
@@ -522,15 +528,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // would throw with nothing to distribute, and resolveProfile's own fallback
           // already handles the profile-less / implicit-default case.
           if (eligible.length > 0) {
-            const storedProfileId = affinityMap.get(rootSessionId)
-            const mappedProfileId = storedProfileId && eligible.includes(storedProfileId)
-              ? storedProfileId
+            const storedEntry = affinityMap.get(rootSessionId)
+            const mappedProfileId = storedEntry && eligible.includes(storedEntry.profileId)
+              ? storedEntry.profileId
               : undefined
-            if (storedProfileId && !mappedProfileId) affinityMap.delete(rootSessionId)
+            if (storedEntry && !mappedProfileId) affinityMap.delete(rootSessionId)
 
             const counts: Record<string, number> = {}
-            for (const profileId of affinityMap.values()) {
-              counts[profileId] = (counts[profileId] ?? 0) + 1
+            for (const entry of affinityMap.values()) {
+              counts[entry.profileId] = (counts[entry.profileId] ?? 0) + 1
             }
 
             const activeId = getActiveProfileId()
@@ -546,8 +552,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             requestedProfileId = profileId
 
             if (firstSeen && !explicitProfileId) {
-              affinityMap.set(rootSessionId, profileId)
+              affinityMap.set(rootSessionId, { profileId, generation: 0 })
             }
+            observedAffinityGeneration = affinityMap.get(rootSessionId)?.generation ?? 0
           }
         }
         let profile = resolveProfile(
@@ -850,22 +857,30 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           if (explicitProfileId || didProfileFallback) return false
 
           let nextProfile: ResolvedProfile | undefined
+          let nextGeneration = observedAffinityGeneration
           if (rootSessionId) {
             const eligible = getEffectiveProfiles(finalConfig.profiles)
               .filter((candidate) => (candidate.type ?? "claude-max") !== "api")
               .map((candidate) => candidate.id)
-            // A concurrent request may have already relocated this root — join that
-            // target instead of relocating a second time, so the whole session tree
-            // converges on one account.
-            const alreadyMoved = affinityMap.get(rootSessionId)
+            const currentEntry = affinityMap.get(rootSessionId)
             let targetId: string
-            if (alreadyMoved && alreadyMoved !== profile.id && eligible.includes(alreadyMoved)) {
-              targetId = alreadyMoved
+            if (currentEntry && currentEntry.generation !== observedAffinityGeneration) {
+              // The mapping advanced since this request was routed — another request
+              // already relocated the tree. Adopt that decision instead of moving
+              // again, so concurrent rate-limited requests cannot ping-pong the tree
+              // across accounts. If it points back at our own rate-limited profile,
+              // defer to backoff rather than start a fresh move.
+              if (!eligible.includes(currentEntry.profileId) || currentEntry.profileId === profile.id) {
+                return false
+              }
+              targetId = currentEntry.profileId
+              nextGeneration = currentEntry.generation
             } else {
               const counts: Record<string, number> = {}
-              for (const id of affinityMap.values()) counts[id] = (counts[id] ?? 0) + 1
+              for (const entry of affinityMap.values()) counts[entry.profileId] = (counts[entry.profileId] ?? 0) + 1
               targetId = relocate(profile.id, counts, eligible)
               if (targetId === profile.id) return false
+              nextGeneration = observedAffinityGeneration + 1
             }
             nextProfile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile, targetId)
           } else {
@@ -874,6 +889,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           if (!nextProfile) return false
 
           const previousProfileId = profile.id
+          const previousProfileSessionId = profileSessionId
           profile = nextProfile
           resolvedProfileId = profile.id
           profileEnv = { ...sdkModelDefaults, ...cleanEnv, ...profile.env }
@@ -882,6 +898,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             ? `${profile.id}:${agentSessionId}` : agentSessionId
           profileScopedCwd = profile.id !== "default"
             ? `${clientWorkingDirectory}::profile=${profile.id}` : clientWorkingDirectory
+          // Carry the passthrough tool/MCP caches to the new profile key: they are
+          // keyed by profileSessionId, which just changed, and a later continuation
+          // that omits tool definitions must still be able to restore them.
+          if (previousProfileSessionId && profileSessionId && profileSessionId !== previousProfileSessionId) {
+            const carriedTools = sessionToolCache.get(previousProfileSessionId)
+            if (carriedTools) sessionToolCache.set(profileSessionId, carriedTools)
+            const carriedMcp = sessionMcpCache.get(previousProfileSessionId)
+            if (carriedMcp) sessionMcpCache.set(profileSessionId, carriedMcp)
+          }
           currentResumeSessionId = undefined
           currentIsUndo = false
           currentUndoRollbackUuid = undefined
@@ -892,10 +917,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           didProfileFallback = true
           forceFreshPrompt = true
           if (rootSessionId) {
-            // Sticky per-root move: retarget only this session tree. Never flip the
-            // global active profile or clear the shared rate-limit snapshot — those
-            // belong to headerless clients handled by the branch below.
-            affinityMap.set(rootSessionId, profile.id)
+            // Sticky per-root move: retarget only this tree, recording the generation
+            // so a concurrent stale request adopts this move instead of relocating
+            // again. Never flip the global active profile or clear the shared
+            // rate-limit snapshot — those belong to the headerless branch below.
+            observedAffinityGeneration = nextGeneration
+            affinityMap.set(rootSessionId, { profileId: profile.id, generation: nextGeneration })
           } else {
             setActiveProfile(profile.id)
             rateLimitStore.clear()
