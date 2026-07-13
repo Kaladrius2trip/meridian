@@ -17,6 +17,7 @@ let claudeConfigDirs: Array<string | undefined> = []
 let queryCallCount = 0
 let rateLimitOnceDirs = new Set<string>()
 let consumedRateLimitDirs = new Set<string>()
+let emitRateLimitInfo = false
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (opts: QueryOptions) => {
@@ -33,6 +34,15 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       if (gatedOutcome === undefined && configDir !== undefined && rateLimitOnceDirs.has(configDir) && !consumedRateLimitDirs.has(configDir)) {
         consumedRateLimitDirs.add(configDir)
         throw new Error("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
+      }
+
+      if (emitRateLimitInfo) {
+        yield {
+          type: "rate_limit_event",
+          rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.5 },
+          uuid: `rl-${callNumber}`,
+          session_id: `sdk-session-${callNumber}`,
+        }
       }
 
       yield {
@@ -77,6 +87,7 @@ mock.module("../proxy/models", () => ({
 
 const { createProxyServer, clearSessionCache } = await import("../proxy/server")
 const { resetActiveProfile } = await import("../proxy/profiles")
+const { rateLimitStore } = await import("../proxy/rateLimitStore")
 
 type TestApp = ReturnType<typeof createProxyServer>["app"]
 
@@ -109,7 +120,25 @@ describe("Session profile affinity", () => {
     queryCallCount = 0
     rateLimitOnceDirs = new Set<string>()
     consumedRateLimitDirs = new Set<string>()
+    emitRateLimitInfo = false
+    rateLimitStore.clear()
     resetQueryGating()
+  })
+
+  it("does not record non-active-profile rate_limit_events in the active quota snapshot", async () => {
+    const app = createTestApp(["personal", "work"])
+    emitRateLimitInfo = true
+
+    const onActive = await postMessage(app, { "x-opencode-root-session": "R1" }, "active root")
+    expect(onActive.status).toBe(200)
+    expect(claudeConfigDirs).toEqual(["/profiles/personal"])
+    expect(rateLimitStore.getAll().length).toBe(1)
+
+    rateLimitStore.clear()
+    const onOther = await postMessage(app, { "x-opencode-root-session": "R2" }, "relocated root")
+    expect(onOther.status).toBe(200)
+    expect(claudeConfigDirs).toEqual(["/profiles/personal", "/profiles/work"])
+    expect(rateLimitStore.getAll().length).toBe(0)
   })
 
   it("keeps one root on its profile and spreads a new root", async () => {
@@ -129,6 +158,21 @@ describe("Session profile affinity", () => {
     }, "root two")
 
     expect([first.status, child.status, secondRoot.status]).toEqual([200, 200, 200])
+    expect(claudeConfigDirs).toEqual([
+      "/profiles/personal",
+      "/profiles/personal",
+      "/profiles/work",
+    ])
+  })
+
+  it("routes x-session-affinity-only requests through affinity too", async () => {
+    const app = createTestApp(["personal", "work"])
+
+    const first = await postMessage(app, { "x-session-affinity": "A1" }, "affinity one")
+    const repeat = await postMessage(app, { "x-session-affinity": "A1" }, "affinity one repeat")
+    const second = await postMessage(app, { "x-session-affinity": "A2" }, "affinity two")
+
+    expect([first.status, repeat.status, second.status]).toEqual([200, 200, 200])
     expect(claudeConfigDirs).toEqual([
       "/profiles/personal",
       "/profiles/personal",

@@ -143,6 +143,16 @@ describe("oauthUsage", () => {
     expect(getCalls()).toBe(1)
   })
 
+  test("force cooldown does not serve an expired snapshot as fresh", async () => {
+    const { fetchImpl } = countingFetch(() => new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 }))
+    const store = makeStore("t")
+    // ttlMs=0 → the just-cached snapshot is already expired for the next call
+    const first = await fetchOAuthUsage({ force: true, store, fetchImpl, ttlMs: 0 })
+    expect(first).not.toBeNull()
+    const duringCooldown = await fetchOAuthUsage({ force: true, store, fetchImpl, ttlMs: 0 })
+    expect(duringCooldown).toBeNull()
+  })
+
   test("per-profile cache: distinct profileIds get separate cache entries", async () => {
     const { fetchImpl, getCalls } = countingFetch((calls) => new Response(JSON.stringify({
       five_hour: { utilization: 10 + calls, resets_at: "2026-04-26T22:30:00Z" },

@@ -528,6 +528,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const explicitProfileId = c.req.header("x-meridian-profile") || undefined
         const rootSessionId = c.req.header("x-opencode-root-session")
           || c.req.header("x-opencode-session")
+          || c.req.header("x-session-affinity")
           || undefined
         let requestedProfileId = explicitProfileId
         let observedAffinityGeneration = 0
@@ -863,6 +864,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let needsFreshPrompt = false
         let didProfileFallback = false
         let forceFreshPrompt = false
+
+        // rateLimitStore is a process-wide snapshot of the ACTIVE profile's
+        // quota (see rateLimitStore.ts). Affinity-relocated roots and explicit
+        // x-meridian-profile requests may run on a different profile — their
+        // rate_limit_events must not pollute the active profile's snapshot.
+        const shouldRecordRateLimit = (): boolean => {
+          const profilesList = getEffectiveProfiles(finalConfig.profiles)
+          if (profilesList.length === 0) return true
+          const activeId = getActiveProfileId() || finalConfig.defaultProfile || profilesList[0]?.id
+          return resolvedProfileId === activeId
+        }
 
         const switchToNextProfile = (mode: "non_stream" | "stream"): boolean => {
           if (explicitProfileId || didProfileFallback) return false
@@ -1438,7 +1450,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     // Capture Claude Max subscription quota updates emitted by
                     // the SDK as rate_limit_event. We snapshot them in a process-wide
                     // store so /v1/usage/quota can return the latest live state.
-                    if ((event as any).type === "rate_limit_event") {
+                    if ((event as any).type === "rate_limit_event" && shouldRecordRateLimit()) {
                       rateLimitStore.record((event as any).rate_limit_info)
                     }
                     // Only count real assistant content — not SDK error messages
@@ -2024,7 +2036,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       advisorModel,
                     }, requestAbort.controller))) {
                       // Same SDK rate-limit capture as the non-stream path.
-                      if ((event as any).type === "rate_limit_event") {
+                      if ((event as any).type === "rate_limit_event" && shouldRecordRateLimit()) {
                         rateLimitStore.record((event as any).rate_limit_info)
                       }
                       if ((event as any).type === "stream_event") {
