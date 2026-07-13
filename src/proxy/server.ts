@@ -8,7 +8,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
 import { guardUpstreamIdle, UpstreamIdleError } from "./streamIdleGuard"
 import { linkRequestAbort } from "./requestAbort"
-import { fetchOAuthUsage } from "./oauthUsage"
+import { fetchOAuthUsage, getLastKnownUsage, resolveUsageResponse } from "./oauthUsage"
+import type { OAuthUsageWindow } from "./oauthUsage"
 import { resolveSdkWorkingDirectory } from "./cwd"
 import type { Context } from "hono"
 import { DEFAULT_PROXY_CONFIG } from "./types"
@@ -361,6 +362,16 @@ function checkTokenHealth(
         requestId,
       })
     }
+  }
+}
+
+export function refreshAllProfilesUsage(config: ProxyConfig): void {
+  for (const profile of getEffectiveProfiles(config.profiles)) {
+    if ((profile.type ?? "claude-max") !== "claude-max") continue
+    fetchOAuthUsage({
+      profileId: profile.id,
+      claudeConfigDir: profile.claudeConfigDir,
+    }).catch(() => {})
   }
 }
 
@@ -3536,14 +3547,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     if (profilesList.length === 0) {
       // Single-account mode — just return the default OAuth account's data.
       const oauth = await fetchOAuthUsage({})
+      const usage = resolveUsageResponse(getLastKnownUsage(null), oauth)
       return c.json({
         profiles: [{
           id: "default",
           isActive: true,
-          windows: oauth?.windows ?? [],
-          extraUsage: oauth?.extraUsage ?? null,
-          fetchedAt: oauth?.fetchedAt ?? null,
-          error: oauth ? null : "no_token",
+          windows: usage.windows,
+          extraUsage: usage.extraUsage,
+          fetchedAt: usage.fetchedAt,
+          stale: usage.stale,
+          error: usage.error ?? null,
         }],
         activeProfile: "default",
         asOf: Date.now(),
@@ -3554,13 +3567,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // Skip API-key profiles — OAuth usage endpoint only applies to Claude Max OAuth.
       const type = p.type ?? "claude-max"
       if (type !== "claude-max") {
+        const windows: OAuthUsageWindow[] = []
         return {
           id: p.id,
           isActive: p.id === activeId,
           type,
-          windows: [] as any[],
+          windows,
           extraUsage: null,
           fetchedAt: null,
+          stale: false,
           error: "not_oauth" as const,
         }
       }
@@ -3568,14 +3583,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         profileId: p.id,
         claudeConfigDir: p.claudeConfigDir,
       })
+      const usage = resolveUsageResponse(getLastKnownUsage(p.id), oauth)
       return {
         id: p.id,
         isActive: p.id === activeId,
         type,
-        windows: oauth?.windows ?? [],
-        extraUsage: oauth?.extraUsage ?? null,
-        fetchedAt: oauth?.fetchedAt ?? null,
-        error: oauth ? null : "no_token",
+        windows: usage.windows,
+        extraUsage: usage.extraUsage,
+        fetchedAt: usage.fetchedAt,
+        stale: usage.stale,
+        error: usage.error ?? null,
       }
     }))
 
@@ -3584,6 +3601,100 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       activeProfile: activeId,
       asOf: Date.now(),
     })
+  })
+
+  // Force-refresh OAuth usage. `profile=all` returns the aggregate payload;
+  // a specific profile returns that profile's entry directly.
+  app.post("/v1/usage/quota/refresh", async (c) => {
+    const profilesList = getEffectiveProfiles(finalConfig.profiles)
+    const activeId = getActiveProfileId() || finalConfig.defaultProfile || profilesList[0]?.id || null
+    const requestedProfile = c.req.query("profile") || "all"
+
+    if (profilesList.length === 0) {
+      const oauth = await fetchOAuthUsage({ force: true }).catch(() => null)
+      const usage = resolveUsageResponse(getLastKnownUsage(null), oauth)
+      const entry = {
+        id: "default",
+        isActive: true,
+        windows: usage.windows,
+        extraUsage: usage.extraUsage,
+        fetchedAt: usage.fetchedAt,
+        stale: usage.stale,
+        error: usage.error ?? null,
+      }
+      if (requestedProfile !== "all") return c.json(entry)
+      return c.json({ profiles: [entry], activeProfile: "default", asOf: Date.now() })
+    }
+
+    if (requestedProfile !== "all") {
+      const profile = profilesList.find(p => p.id === requestedProfile)
+      if (!profile) return c.json({ error: "unknown_profile" }, 404)
+      const type = profile.type ?? "claude-max"
+      if (type !== "claude-max") {
+        const windows: OAuthUsageWindow[] = []
+        return c.json({
+          id: profile.id,
+          isActive: profile.id === activeId,
+          type,
+          windows,
+          extraUsage: null,
+          fetchedAt: null,
+          stale: false,
+          error: "not_oauth",
+        })
+      }
+      const oauth = await fetchOAuthUsage({
+        force: true,
+        profileId: profile.id,
+        claudeConfigDir: profile.claudeConfigDir,
+      }).catch(() => null)
+      const usage = resolveUsageResponse(getLastKnownUsage(profile.id), oauth)
+      return c.json({
+        id: profile.id,
+        isActive: profile.id === activeId,
+        type,
+        windows: usage.windows,
+        extraUsage: usage.extraUsage,
+        fetchedAt: usage.fetchedAt,
+        stale: usage.stale,
+        error: usage.error ?? null,
+      })
+    }
+
+    const results = await Promise.all(profilesList.map(async (p) => {
+      const type = p.type ?? "claude-max"
+      if (type !== "claude-max") {
+        const windows: OAuthUsageWindow[] = []
+        return {
+          id: p.id,
+          isActive: p.id === activeId,
+          type,
+          windows,
+          extraUsage: null,
+          fetchedAt: null,
+          stale: false,
+          error: "not_oauth" as const,
+        }
+      }
+      const oauth = await fetchOAuthUsage({
+        force: true,
+        profileId: p.id,
+        claudeConfigDir: p.claudeConfigDir,
+      }).catch(() => null)
+      const usage = resolveUsageResponse(getLastKnownUsage(p.id), oauth)
+      return {
+        id: p.id,
+        isActive: p.id === activeId,
+        type,
+        windows: usage.windows,
+        extraUsage: usage.extraUsage,
+        fetchedAt: usage.fetchedAt,
+        stale: usage.stale,
+        error: usage.error ?? null,
+      }
+    }))
+
+    return c.json({ profiles: results, activeProfile: activeId, asOf: Date.now() })
   })
 
   // Returns the last observed token usage for a session, looked up by the Claude
@@ -3780,12 +3891,21 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
     if (authKeepaliveInterval.unref) authKeepaliveInterval.unref()
   }
 
+  let usageRefreshInterval: ReturnType<typeof setInterval> | undefined
+  if (effectiveProfiles.length > 0) {
+    const USAGE_REFRESH_MS = 3_600_000
+    refreshAllProfilesUsage(finalConfig)
+    usageRefreshInterval = setInterval(() => refreshAllProfilesUsage(finalConfig), USAGE_REFRESH_MS)
+    if (usageRefreshInterval.unref) usageRefreshInterval.unref()
+  }
+
   return {
     server,
     config: finalConfig,
     async close() {
       clearInterval(profileTokenRefreshInterval)
       if (authKeepaliveInterval) clearInterval(authKeepaliveInterval)
+      if (usageRefreshInterval) clearInterval(usageRefreshInterval)
       stopBackgroundRefresh()
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()))

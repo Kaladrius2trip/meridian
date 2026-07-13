@@ -9,7 +9,8 @@
  */
 
 import { describe, expect, test, beforeEach } from "bun:test"
-import { fetchOAuthUsage, resetOAuthUsageCache } from "../proxy/oauthUsage"
+import { fetchOAuthUsage, getLastKnownUsage, resetOAuthUsageCache, resolveUsageResponse } from "../proxy/oauthUsage"
+import type { OAuthUsageSnapshot } from "../proxy/oauthUsage"
 import type { CredentialStore } from "../proxy/tokenRefresh"
 
 const SAMPLE_RESPONSE = {
@@ -134,12 +135,12 @@ describe("oauthUsage", () => {
     expect(getCalls()).toBe(1)
   })
 
-  test("force=true bypasses cache", async () => {
+  test("force=true uses cache during cooldown", async () => {
     const { fetchImpl, getCalls } = countingFetch(() => new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 }))
     const store = makeStore("t")
     await fetchOAuthUsage({ force: true, store, fetchImpl })
     await fetchOAuthUsage({ force: true, store, fetchImpl })
-    expect(getCalls()).toBe(2)
+    expect(getCalls()).toBe(1)
   })
 
   test("per-profile cache: distinct profileIds get separate cache entries", async () => {
@@ -183,5 +184,64 @@ describe("oauthUsage", () => {
     const w = result!.windows[0]
     expect(w).toBeDefined()
     expect(w!.resetsAt).toBe(Date.parse(iso))
+  })
+})
+
+describe("resolveUsageResponse", () => {
+  const lastGood: OAuthUsageSnapshot = {
+    windows: [{ type: "five_hour", utilization: 0.1, resetsAt: 100 }],
+    extraUsage: null,
+    fetchedAt: 1_000,
+  }
+  const fresh: OAuthUsageSnapshot = {
+    windows: [{ type: "seven_day", utilization: 0.2, resetsAt: 200 }],
+    extraUsage: null,
+    fetchedAt: 2_000,
+  }
+
+  test("returns a non-stale response when fresh usage is available", () => {
+    expect(resolveUsageResponse(lastGood, fresh)).toEqual({
+      windows: fresh.windows,
+      extraUsage: fresh.extraUsage,
+      fetchedAt: fresh.fetchedAt,
+      stale: false,
+    })
+  })
+
+  test("returns stale last-known usage with its original fetchedAt when fresh usage fails", () => {
+    expect(resolveUsageResponse(lastGood, null)).toEqual({
+      windows: lastGood.windows,
+      extraUsage: lastGood.extraUsage,
+      fetchedAt: 1_000,
+      stale: true,
+    })
+  })
+
+  test("returns an empty no-token response when no usage exists", () => {
+    expect(resolveUsageResponse(null, null)).toEqual({
+      windows: [],
+      extraUsage: null,
+      fetchedAt: null,
+      stale: false,
+      error: "no_token",
+    })
+  })
+})
+
+describe("getLastKnownUsage", () => {
+  beforeEach(() => {
+    resetOAuthUsageCache()
+  })
+
+  test("returns retained usage after its TTL expires", async () => {
+    const fetchImpl = fixedFetch(() => new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 }))
+    const seeded = await fetchOAuthUsage({ force: true, fetchImpl, store: makeStore("token"), profileId: "retained" })
+    const expired = await fetchOAuthUsage({ ttlMs: 0, fetchImpl, store: makeStore(null), profileId: "retained" })
+    expect(expired).toBeNull()
+    expect(getLastKnownUsage("retained")).toBe(seeded)
+  })
+
+  test("returns null for an unknown profile", () => {
+    expect(getLastKnownUsage("unknown")).toBeNull()
   })
 })
