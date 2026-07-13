@@ -262,7 +262,13 @@ async function fetchOAuthUsageImpl(opts?: FetchOAuthUsageOpts): Promise<OAuthUsa
     const now = Date.now()
     const lastForced = lastForcedByProfile.get(cacheKey)
     if (lastForced !== undefined && now - lastForced < FORCE_COOLDOWN_MS) {
-      return cacheByProfile.get(cacheKey) ?? null
+      // Only serve the cache as "fresh" if it actually is. After a failed
+      // force the cache still holds the pre-failure snapshot; returning it
+      // here would make the route report stale:false without any successful
+      // refresh. Returning null routes callers to the last-known-good path,
+      // which correctly flags the data as stale.
+      const cached = cacheByProfile.get(cacheKey)
+      return cached && now - cached.fetchedAt < ttl ? cached : null
     }
     lastForcedByProfile.set(cacheKey, now)
   }
