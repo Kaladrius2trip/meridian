@@ -1249,6 +1249,28 @@ describe("createSseTranslator", () => {
     translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 100, output_tokens: 42 } })
     expect(translate.buildUsageChunk()!.usage).toEqual({ prompt_tokens: 100, completion_tokens: 42, total_tokens: 142 })
   })
+
+  it("buildUsageChunk merges message_start prompt/cache usage with output-only message_delta usage", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({
+      type: "message_start",
+      message: { id: "msg_1", usage: { input_tokens: 12, cache_read_input_tokens: 500, cache_creation_input_tokens: 30 } },
+    })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 42 } })
+    expect(translate.buildUsageChunk()!.usage).toEqual({
+      prompt_tokens: 542,
+      completion_tokens: 42,
+      total_tokens: 584,
+      cache_read_input_tokens: 500,
+      cache_creation_input_tokens: 30,
+    })
+  })
+
+  it("buildUsageChunk emits usage from message_start alone when no message_delta.usage arrives", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_start", message: { id: "msg_1", usage: { input_tokens: 10, output_tokens: 0 } } })
+    expect(translate.buildUsageChunk()!.usage).toEqual({ prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 })
+  })
 })
 
 // ---------------------------------------------------------------------------

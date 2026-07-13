@@ -200,7 +200,13 @@ export interface OpenAiStreamChunk {
     }
     finish_reason: "stop" | "length" | "tool_calls" | null
   }>
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
 }
 
 export interface OpenAiCompletionFunctionToolCall {
@@ -653,7 +659,7 @@ export interface AnthropicSseEvent {
     | { type: "text"; text?: string }
     | { type: "thinking"; thinking?: string }
     | AnthropicToolUseBlock
-  message?: { id?: string }
+  message?: { id?: string; usage?: AnthropicUsage }
   usage?: AnthropicUsage
 }
 
@@ -685,6 +691,7 @@ export interface SseTranslatorContext {
  */
 export function createSseTranslator(ctx: SseTranslatorContext): SseTranslator {
   let toolCallIndex = -1 // -1 means "no tools used yet", becomes 0 on first block
+  let startUsage: AnthropicUsage | undefined
   let lastUsage: AnthropicUsage | undefined
 
   const translate = ((event: AnthropicSseEvent) => {
@@ -699,6 +706,12 @@ export function createSseTranslator(ctx: SseTranslatorContext): SseTranslator {
       toolCallIndex++
     }
 
+    // Anthropic splits usage across the stream: message_start carries the
+    // prompt/cache token counts, message_delta typically carries only
+    // output_tokens. Capture both and merge in buildUsageChunk.
+    if (event.type === "message_start" && event.message?.usage) {
+      startUsage = event.message.usage
+    }
     if (event.type === "message_delta" && event.usage) {
       lastUsage = event.usage
     }
@@ -714,9 +727,13 @@ export function createSseTranslator(ctx: SseTranslatorContext): SseTranslator {
   }) as SseTranslator
 
   translate.buildUsageChunk = () => {
-    if (!ctx.includeUsage || !lastUsage) return null
-    const promptTokens = lastUsage.input_tokens ?? 0
-    const completionTokens = lastUsage.output_tokens ?? 0
+    if (!ctx.includeUsage || (!lastUsage && !startUsage)) return null
+    const merged = { ...startUsage, ...lastUsage }
+    const uncachedPromptTokens = merged.input_tokens ?? startUsage?.input_tokens ?? 0
+    const cacheReadTokens = merged.cache_read_input_tokens ?? 0
+    const cacheCreationTokens = merged.cache_creation_input_tokens ?? 0
+    const promptTokens = uncachedPromptTokens + cacheReadTokens + cacheCreationTokens
+    const completionTokens = merged.output_tokens ?? 0
     return {
       id: ctx.completionId,
       object: "chat.completion.chunk",
@@ -727,6 +744,8 @@ export function createSseTranslator(ctx: SseTranslatorContext): SseTranslator {
         prompt_tokens: promptTokens,
         completion_tokens: completionTokens,
         total_tokens: promptTokens + completionTokens,
+        ...(cacheReadTokens ? { cache_read_input_tokens: cacheReadTokens } : {}),
+        ...(cacheCreationTokens ? { cache_creation_input_tokens: cacheCreationTokens } : {}),
       },
     }
   }

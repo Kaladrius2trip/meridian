@@ -796,6 +796,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let currentResumeSessionId = resumeSessionId
         let currentIsUndo = isUndo
         let currentUndoRollbackUuid = undoRollbackUuid
+        let needsFreshPrompt = false
         let didProfileFallback = false
 
         const switchToNextProfile = (mode: "non_stream" | "stream"): boolean => {
@@ -815,6 +816,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           currentResumeSessionId = undefined
           currentIsUndo = false
           currentUndoRollbackUuid = undefined
+          // The prompt was built for the old profile's resume path (delta
+          // after cachedSession.messageCount). The new profile starts a fresh
+          // SDK session, so the retry must replay the full conversation.
+          needsFreshPrompt = true
           didProfileFallback = true
           setActiveProfile(profile.id)
           rateLimitStore.clear()
@@ -979,6 +984,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
       // Create a fresh prompt value — can be called multiple times for retry
       function makePrompt(): string | AsyncIterable<any> {
+        if (needsFreshPrompt) {
+          return buildFreshPrompt(allMessages, sanitizeOpts)
+        }
         if (structuredMessages) {
           const msgs = structuredMessages
           return (async function* () { for (const msg of msgs) yield msg })()
