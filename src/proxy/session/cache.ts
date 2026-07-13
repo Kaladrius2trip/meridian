@@ -240,14 +240,18 @@ export function getSessionByClaudeId(claudeSessionId: string): SessionState | un
 /** Store a session mapping with lineage hash and SDK UUIDs for divergence detection.
  *  @param sdkMessageUuids — per-message SDK assistant UUIDs (null for user messages).
  *    If provided, merged with any previously stored UUIDs to build a complete map.
- *  @param contextUsage — optional last observed token usage to attach to the session. */
+ *  @param contextUsage — optional last observed token usage to attach to the session.
+ *  @param alsoFingerprint — also populate the fingerprint cache even when an
+ *    explicit sessionId is present, so a later request in the same conversation
+ *    that lost its session metadata can still resume via fingerprint. */
 export function storeSession(
   sessionId: string | undefined,
   messages: Array<{ role: string; content: unknown }>,
   claudeSessionId: string,
   workingDirectory?: string,
   sdkMessageUuids?: Array<string | null>,
-  contextUsage?: TokenUsage
+  contextUsage?: TokenUsage,
+  alsoFingerprint?: boolean
 ) {
   if (!claudeSessionId) return
   const lineageHash = computeLineageHash(messages)
@@ -269,7 +273,7 @@ export function storeSession(
   // to the fingerprint cache too causes cross-session collisions when a
   // later headerless request (e.g. OpenCode category-dispatched or title
   // generation) happens to share the same first-message fingerprint.
-  if (fp && !sessionId) fingerprintCache.set(fp, state)
+  if (fp && (!sessionId || alsoFingerprint)) fingerprintCache.set(fp, state)
   // Shared file store (cross-proxy resume)
   const key = sessionId || fp
   if (key) {

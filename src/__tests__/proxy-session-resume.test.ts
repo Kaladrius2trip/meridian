@@ -286,6 +286,45 @@ describe("Session resume: fingerprint fallback", () => {
     expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
   })
 
+  it("resumes Claude Code via fingerprint when a conversation started with metadata loses it", async () => {
+    const app = createTestApp()
+    const headers = { "user-agent": "claude-cli/2.1.207" }
+    const metadata = {
+      user_id: JSON.stringify({
+        device_id: "device-1",
+        account_uuid: "",
+        session_id: "claude-code-session-fp",
+      }),
+    }
+
+    await (await post(app, {
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      stream: false,
+      metadata,
+      messages: [{ role: "user", content: "Check the build" }],
+    }, headers)).json()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      stream: false,
+      messages: [
+        { role: "user", content: "Check the build" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_2", name: "Bash", input: { command: "npm run build" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "Build complete" }],
+        },
+      ],
+    }, headers)).json()
+
+    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+  })
+
   it("keeps Claude Code fingerprint resume for tool_result without metadata", async () => {
     const app = createTestApp()
     const headers = { "user-agent": "claude-cli/2.1.207" }

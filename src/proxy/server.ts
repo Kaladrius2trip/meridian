@@ -1772,7 +1772,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // memory of a call whose result never arrives (#552). A fresh
           // session rebuilt from client history is coherent by construction.
               if (currentSessionId && !isIndependentSession && !sawDuplicateToolUse) {
-                storeSession(profileSessionId, body.messages || [], currentSessionId, profileScopedCwd, sdkUuidMap, lastUsage)
+                storeSession(
+                  profileSessionId, body.messages || [], currentSessionId, profileScopedCwd, sdkUuidMap, lastUsage,
+                  // NOTE: agent-specific (claude-code) — sessions are keyed by
+                  // metadata.user_id.session_id, but older clients can omit the
+                  // metadata on later requests in the same conversation. Dual-write
+                  // the fingerprint cache so those requests still resume.
+                  adapter.name === "claude-code",
+                )
               }
 
               const responseSessionId = currentSessionId || resumeSessionId || `session_${Date.now()}`
@@ -2421,7 +2428,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // call that diverges from the client's view (#552); see the
               // non-stream store above.
               if (currentSessionId && !isIndependentSession && !sawDuplicateToolUse) {
-                storeSession(profileSessionId, body.messages || [], currentSessionId, profileScopedCwd, sdkUuidMap, lastUsage)
+                storeSession(
+                  profileSessionId, body.messages || [], currentSessionId, profileScopedCwd, sdkUuidMap, lastUsage,
+                  // NOTE: agent-specific (claude-code) — sessions are keyed by
+                  // metadata.user_id.session_id, but older clients can omit the
+                  // metadata on later requests in the same conversation. Dual-write
+                  // the fingerprint cache so those requests still resume.
+                  adapter.name === "claude-code",
+                )
               }
 
               if (!streamClosed) {
