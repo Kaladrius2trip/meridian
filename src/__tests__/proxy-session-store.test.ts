@@ -13,8 +13,9 @@ import {
   clearSharedSessions,
   setSessionStoreDir,
 } from "../proxy/sessionStore"
+import { storeSession, lookupSession, clearSessionCache } from "../proxy/session/cache"
 import { join } from "node:path"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 
 describe("Shared session store", () => {
@@ -142,5 +143,55 @@ describe("Shared session store", () => {
     // Should still be able to write after corruption
     storeSharedSession("new-sess", "claude-new")
     expect(lookupSharedSession("new-sess")!.claudeSessionId).toBe("claude-new")
+  })
+})
+
+describe("storeSession alsoFingerprint shared-store persistence", () => {
+  let tmpDir: string
+  const messages = [{ role: "user", content: "Check the build" }]
+  const continuation = [
+    ...messages,
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: "and the tests" },
+  ]
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "session-store-fp-"))
+    setSessionStoreDir(tmpDir)
+    clearSharedSessions()
+    clearSessionCache()
+  })
+
+  afterEach(() => {
+    setSessionStoreDir(null)
+    try { rmSync(tmpDir, { recursive: true }) } catch {}
+  })
+
+  // clearSessionCache() also wipes the shared file store, so a restart is
+  // simulated by snapshotting sessions.json and restoring it after the wipe —
+  // in-memory caches stay empty, only the file survives.
+  function simulateRestart() {
+    const storeFile = join(tmpDir, "sessions.json")
+    const raw = readFileSync(storeFile, "utf8")
+    clearSessionCache()
+    writeFileSync(storeFile, raw)
+  }
+
+  it("persists the fingerprint key so the fallback survives a restart", () => {
+    storeSession("cc:session-1", messages, "claude-sess-fp", "/repo", undefined, undefined, true)
+    simulateRestart()
+
+    const result = lookupSession(undefined, continuation, "/repo")
+    expect(result.type).toBe("continuation")
+    if (result.type !== "continuation") throw new Error("unreachable")
+    expect(result.session.claudeSessionId).toBe("claude-sess-fp")
+  })
+
+  it("does not persist a fingerprint key without the flag", () => {
+    storeSession("oc-session-1", messages, "claude-sess-nofp", "/repo")
+    simulateRestart()
+
+    const result = lookupSession(undefined, continuation, "/repo")
+    expect(result.type).toBe("diverged")
   })
 })
