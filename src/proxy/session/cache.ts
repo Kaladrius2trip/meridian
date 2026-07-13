@@ -274,9 +274,12 @@ export function storeSession(
   // later headerless request (e.g. OpenCode category-dispatched or title
   // generation) happens to share the same first-message fingerprint.
   if (fp && (!sessionId || alsoFingerprint)) fingerprintCache.set(fp, state)
-  // Shared file store (cross-proxy resume)
-  const key = sessionId || fp
-  if (key) {
+  // Shared file store (cross-proxy resume). With alsoFingerprint, persist
+  // under the fingerprint key too so the fallback survives proxy restarts
+  // and works across proxy processes, not just in this process's memory.
+  const keys = new Set([sessionId || fp, alsoFingerprint ? fp : undefined])
+  for (const key of keys) {
+    if (!key) continue
     storeSharedSession(
       key,
       claudeSessionId,
