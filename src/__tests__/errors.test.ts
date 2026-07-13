@@ -2,7 +2,7 @@
  * Unit tests for classifyError — pure function, no mocks needed.
  */
 import { describe, it, expect } from "bun:test"
-import { classifyError, isStaleSessionError, isExtraUsageRequiredError, extractSdkTermination, formatSdkTermination } from "../proxy/errors"
+import { classifyError, isStaleSessionError, isRateLimitError, isExtraUsageRequiredError, extractSdkTermination, formatSdkTermination } from "../proxy/errors"
 
 describe("classifyError", () => {
   describe("authentication errors", () => {
@@ -74,6 +74,12 @@ describe("classifyError", () => {
     it("detects 'too many requests' keyword", () => {
       const result = classifyError("too many requests")
       expect(result.status).toBe(429)
+    })
+
+    it("classifies Claude Max session-limit as a 429 so clients back off", () => {
+      const result = classifyError("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
+      expect(result.status).toBe(429)
+      expect(result.type).toBe("rate_limit_error")
     })
   })
 
@@ -402,5 +408,24 @@ describe("formatSdkTermination", () => {
     expect(line).toContain("reason=unknown")
     expect(line).toContain("source=main")
     expect(line).toContain('raw="Some weird upstream failure"')
+  })
+})
+
+describe("isRateLimitError", () => {
+  it("detects classic 429 / rate-limit / too-many-requests phrasings", () => {
+    expect(isRateLimitError("429 Too Many Requests")).toBe(true)
+    expect(isRateLimitError("rate limit exceeded")).toBe(true)
+    expect(isRateLimitError("too many requests")).toBe(true)
+  })
+
+  it("detects Claude Max session-limit so the proxy switches profiles", () => {
+    // Real Claude Max 5-hour cap wording — must trigger the auto-switch path.
+    expect(isRateLimitError("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")).toBe(true)
+    expect(isRateLimitError("You've hit your session limit")).toBe(true)
+  })
+
+  it("returns false for unrelated errors", () => {
+    expect(isRateLimitError("authentication failed")).toBe(false)
+    expect(isRateLimitError("No conversation found with session ID: abc")).toBe(false)
   })
 })

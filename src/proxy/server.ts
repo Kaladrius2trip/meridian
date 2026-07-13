@@ -80,6 +80,7 @@ import {
 // Re-export for backwards compatibility (existing tests import from here)
 
 import { lookupSession, storeSession, clearSessionCache, getMaxSessionsLimit, evictSession, getSessionByClaudeId } from "./session/cache"
+import { relocate, selectProfileForRoot } from "./session/affinity"
 import { lookupSessionRecovery, listStoredSessions } from "./sessionStore"
 // Re-export for backwards compatibility (existing tests import from here)
 export { computeLineageHash, hashMessage, computeMessageHashes }
@@ -382,6 +383,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // invalidation from MCP server re-creation. Key hashes tool name + schema
   // so silently-updated tool definitions force a rebuild.
   const sessionMcpCache = new LRUMap<string, { key: string; mcp: ReturnType<typeof createPassthroughMcpServer> }>(getMaxSessionsLimit())
+  // Instance-local root-session -> {profile, generation} affinity. Bounded by
+  // getMaxSessionsLimit(): once that many distinct roots are live the least-recently
+  // used mapping is evicted and its next request re-picks a profile. That is a
+  // bounded-stickiness ceiling, acceptable for the handful of concurrent roots a
+  // single user drives; revisit with lifecycle-aware retention if roots approach it.
+  const affinityMap = new LRUMap<string, { profileId: string; generation: number }>(getMaxSessionsLimit())
 
   const pluginDir = finalConfig.pluginDir ?? join(homedir(), ".config", "meridian", "plugins")
   const pluginConfigPath = finalConfig.pluginConfigPath ?? join(homedir(), ".config", "meridian", "plugins.json")
@@ -507,8 +514,49 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
         const outputFormat = parsedOutputFormat.value
 
-        // Resolve profile: header > active > default > first configured
-        const requestedProfileId = c.req.header("x-meridian-profile") || undefined
+        const explicitProfileId = c.req.header("x-meridian-profile") || undefined
+        const rootSessionId = c.req.header("x-opencode-root-session")
+          || c.req.header("x-opencode-session")
+          || undefined
+        let requestedProfileId = explicitProfileId
+        let observedAffinityGeneration = 0
+        if (rootSessionId) {
+          const eligible = getEffectiveProfiles(finalConfig.profiles)
+            .filter((candidate) => (candidate.type ?? "claude-max") !== "api")
+            .map((candidate) => candidate.id)
+          // Skip affinity when no eligible (non-api) profiles exist: selectProfileForRoot
+          // would throw with nothing to distribute, and resolveProfile's own fallback
+          // already handles the profile-less / implicit-default case.
+          if (eligible.length > 0) {
+            const storedEntry = affinityMap.get(rootSessionId)
+            const mappedProfileId = storedEntry && eligible.includes(storedEntry.profileId)
+              ? storedEntry.profileId
+              : undefined
+            if (storedEntry && !mappedProfileId) affinityMap.delete(rootSessionId)
+
+            const counts: Record<string, number> = {}
+            for (const entry of affinityMap.values()) {
+              counts[entry.profileId] = (counts[entry.profileId] ?? 0) + 1
+            }
+
+            const activeId = getActiveProfileId()
+            const defaultId = finalConfig.defaultProfile ?? eligible[0]
+            const { profileId, firstSeen } = selectProfileForRoot({
+              counts,
+              eligible,
+              ...(explicitProfileId ? { explicit: explicitProfileId } : {}),
+              ...(mappedProfileId ? { mapped: mappedProfileId } : {}),
+              ...(activeId ? { activeId } : {}),
+              ...(defaultId ? { defaultId } : {}),
+            })
+            requestedProfileId = profileId
+
+            if (firstSeen && !explicitProfileId) {
+              affinityMap.set(rootSessionId, { profileId, generation: 0 })
+            }
+            observedAffinityGeneration = affinityMap.get(rootSessionId)?.generation ?? 0
+          }
+        }
         let profile = resolveProfile(
           finalConfig.profiles,
           finalConfig.defaultProfile,
@@ -803,13 +851,45 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let currentUndoRollbackUuid = undoRollbackUuid
         let needsFreshPrompt = false
         let didProfileFallback = false
+        let forceFreshPrompt = false
 
         const switchToNextProfile = (mode: "non_stream" | "stream"): boolean => {
-          if (requestedProfileId || didProfileFallback) return false
-          const nextProfile = resolveNextNonApiProfile(finalConfig, profile.id)
+          if (explicitProfileId || didProfileFallback) return false
+
+          let nextProfile: ResolvedProfile | undefined
+          let nextGeneration = observedAffinityGeneration
+          if (rootSessionId) {
+            const eligible = getEffectiveProfiles(finalConfig.profiles)
+              .filter((candidate) => (candidate.type ?? "claude-max") !== "api")
+              .map((candidate) => candidate.id)
+            const currentEntry = affinityMap.get(rootSessionId)
+            let targetId: string
+            if (currentEntry && currentEntry.generation !== observedAffinityGeneration) {
+              // The mapping advanced since this request was routed — another request
+              // already relocated the tree. Adopt that decision instead of moving
+              // again, so concurrent rate-limited requests cannot ping-pong the tree
+              // across accounts. If it points back at our own rate-limited profile,
+              // defer to backoff rather than start a fresh move.
+              if (!eligible.includes(currentEntry.profileId) || currentEntry.profileId === profile.id) {
+                return false
+              }
+              targetId = currentEntry.profileId
+              nextGeneration = currentEntry.generation
+            } else {
+              const counts: Record<string, number> = {}
+              for (const entry of affinityMap.values()) counts[entry.profileId] = (counts[entry.profileId] ?? 0) + 1
+              targetId = relocate(profile.id, counts, eligible)
+              if (targetId === profile.id) return false
+              nextGeneration = observedAffinityGeneration + 1
+            }
+            nextProfile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile, targetId)
+          } else {
+            nextProfile = resolveNextNonApiProfile(finalConfig, profile.id)
+          }
           if (!nextProfile) return false
 
           const previousProfileId = profile.id
+          const previousProfileSessionId = profileSessionId
           profile = nextProfile
           resolvedProfileId = profile.id
           profileEnv = { ...sdkModelDefaults, ...cleanEnv, ...profile.env }
@@ -818,6 +898,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             ? `${profile.id}:${agentSessionId}` : agentSessionId
           profileScopedCwd = profile.id !== "default"
             ? `${clientWorkingDirectory}::profile=${profile.id}` : clientWorkingDirectory
+          // Carry the passthrough tool/MCP caches to the new profile key: they are
+          // keyed by profileSessionId, which just changed, and a later continuation
+          // that omits tool definitions must still be able to restore them.
+          if (previousProfileSessionId && profileSessionId && profileSessionId !== previousProfileSessionId) {
+            const carriedTools = sessionToolCache.get(previousProfileSessionId)
+            if (carriedTools) sessionToolCache.set(profileSessionId, carriedTools)
+            const carriedMcp = sessionMcpCache.get(previousProfileSessionId)
+            if (carriedMcp) sessionMcpCache.set(profileSessionId, carriedMcp)
+          }
           currentResumeSessionId = undefined
           currentIsUndo = false
           currentUndoRollbackUuid = undefined
@@ -826,8 +915,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // SDK session, so the retry must replay the full conversation.
           needsFreshPrompt = true
           didProfileFallback = true
-          setActiveProfile(profile.id)
-          rateLimitStore.clear()
+          forceFreshPrompt = true
+          if (rootSessionId) {
+            // Sticky per-root move: retarget only this tree, recording the generation
+            // so a concurrent stale request adopts this move instead of relocating
+            // again. Never flip the global active profile or clear the shared
+            // rate-limit snapshot — those belong to the headerless branch below.
+            observedAffinityGeneration = nextGeneration
+            affinityMap.set(rootSessionId, { profileId: profile.id, generation: nextGeneration })
+          } else {
+            setActiveProfile(profile.id)
+            rateLimitStore.clear()
+          }
           claudeLog("profile.auto_switch", { mode, from: previousProfileId, to: profile.id, reason: "rate_limit" })
           plog(`[PROXY] ${requestMeta.requestId} profile ${previousProfileId} rate-limited, retrying with profile ${profile.id}`)
           return true
@@ -1312,7 +1411,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 let didYieldContent = false
                 try {
                   for await (const event of query(buildQueryOptions({
-                    prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
+                    prompt: forceFreshPrompt ? buildFreshPrompt(allMessages, sanitizeOpts) : makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                     passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                     resumeSessionId: currentResumeSessionId, isUndo: currentIsUndo, undoRollbackUuid: currentUndoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, outputFormat, betas, settingSources,
@@ -1900,7 +1999,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   let didYieldClientEvent = false
                   try {
                     for await (const event of query(buildQueryOptions({
-                      prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
+                      prompt: forceFreshPrompt ? buildFreshPrompt(allMessages, sanitizeOpts) : makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                       passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
                       resumeSessionId: currentResumeSessionId, isUndo: currentIsUndo, undoRollbackUuid: currentUndoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,
@@ -3189,6 +3288,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     if (authz) internalHeaders["authorization"] = authz
     const opencodeSession = c.req.header("x-opencode-session")
     if (opencodeSession) internalHeaders["x-opencode-session"] = opencodeSession
+    const opencodeRootSession = c.req.header("x-opencode-root-session")
+    if (opencodeRootSession) internalHeaders["x-opencode-root-session"] = opencodeRootSession
     const hermesSession = c.req.header("x-hermes-session")
     if (hermesSession) internalHeaders["x-hermes-session"] = hermesSession
     const sessionAffinity = c.req.header("x-session-affinity")

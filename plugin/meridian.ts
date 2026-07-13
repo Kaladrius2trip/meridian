@@ -14,7 +14,21 @@
  *   { "plugin": ["/absolute/path/to/plugin/meridian.ts"] }
  */
 
-type Plugin = (input: any) => Promise<{
+import { resolveRootSessionId } from "./rootSession"
+
+type PluginInput = {
+  client: {
+    session: {
+      get: (input: {
+        path: { id: string }
+        query: { directory: string }
+      }) => Promise<{ data: { parentID?: string } }>
+    }
+  }
+  directory: string
+}
+
+type Plugin = (input: PluginInput) => Promise<{
   "chat.headers"?: (
     input: {
       sessionID: string
@@ -28,7 +42,9 @@ type Plugin = (input: any) => Promise<{
   ) => Promise<void>
 }>
 
-const MeridianPlugin: Plugin = async () => {
+const rootSessionCache = new Map<string, string>()
+
+const MeridianPlugin: Plugin = async ({ client, directory }) => {
   return {
     "chat.headers": async (incoming, output) => {
       // Only inject headers for Anthropic provider requests
@@ -36,6 +52,20 @@ const MeridianPlugin: Plugin = async () => {
 
       // Session tracking
       output.headers["x-opencode-session"] = incoming.sessionID
+      let rootSessionId = incoming.sessionID
+      try {
+        rootSessionId = await resolveRootSessionId(
+          async (id) => {
+            const response = await client.session.get({ path: { id }, query: { directory } })
+            return { parentID: response.data.parentID }
+          },
+          incoming.sessionID,
+          rootSessionCache
+        )
+      } catch {
+        rootSessionId = incoming.sessionID
+      }
+      output.headers["x-opencode-root-session"] = rootSessionId
       output.headers["x-opencode-request"] = incoming.message.id
 
       // Agent mode — runtime value is the full agent object even though

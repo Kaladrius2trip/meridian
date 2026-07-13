@@ -5,15 +5,29 @@
  */
 
 import { describe, it, expect, mock, beforeEach } from "bun:test"
-import { assistantMessage, makeRequest, READ_TOOL } from "./helpers"
+import { assistantMessage, makeRequest } from "./helpers"
 
-let capturedQueryParams: any = null
-let mockMessages: any[] = []
+type CapturedQueryParams = {
+  readonly options?: {
+    readonly env?: Record<string, string | undefined>
+    readonly mcpServers?: Record<string, unknown>
+  }
+}
+
+let capturedQueryParamsHistory: CapturedQueryParams[] = []
+let mockMessages: Array<ReturnType<typeof assistantMessage>> = []
+let rateLimitOnceDirs = new Set<string>()
+let consumedRateLimitDirs = new Set<string>()
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
-  query: (params: any) => {
-    capturedQueryParams = params
+  query: (params: CapturedQueryParams) => {
+    capturedQueryParamsHistory.push(params)
     return (async function* () {
+      const configDir = params.options?.env?.CLAUDE_CONFIG_DIR
+      if (configDir !== undefined && rateLimitOnceDirs.has(configDir) && !consumedRateLimitDirs.has(configDir)) {
+        consumedRateLimitDirs.add(configDir)
+        throw new Error("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
+      }
       for (const msg of mockMessages) yield msg
     })()
   },
@@ -27,7 +41,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 
 mock.module("../logger", () => ({
   claudeLog: () => {},
-  withClaudeLogContext: (_ctx: any, fn: any) => fn(),
+  withClaudeLogContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }))
 
 mock.module("../mcpTools", () => ({
@@ -35,6 +49,7 @@ mock.module("../mcpTools", () => ({
 }))
 
 const { createProxyServer, clearSessionCache } = await import("../proxy/server")
+type TestApp = ReturnType<typeof createProxyServer>["app"]
 
 const SESSION_ID = "tool-cache-test-session"
 
@@ -50,12 +65,13 @@ const TOOL_B = {
   input_schema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } },
 }
 
-function createTestApp() {
-  const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
+function createTestApp(profileIds: string[] = []) {
+  const profiles = profileIds.map((id) => ({ id, claudeConfigDir: `/profiles/${id}` }))
+  const { app } = createProxyServer({ port: 0, host: "127.0.0.1", profiles })
   return app
 }
 
-async function post(app: any, body: any, sessionId = SESSION_ID) {
+async function post(app: TestApp, body: Record<string, unknown>, sessionId = SESSION_ID) {
   return app.fetch(new Request("http://localhost/v1/messages", {
     method: "POST",
     headers: {
@@ -69,7 +85,9 @@ async function post(app: any, body: any, sessionId = SESSION_ID) {
 describe("Session tool cache", () => {
   beforeEach(() => {
     clearSessionCache()
-    capturedQueryParams = null
+    capturedQueryParamsHistory = []
+    rateLimitOnceDirs = new Set<string>()
+    consumedRateLimitDirs = new Set<string>()
     mockMessages = [
       assistantMessage([{ type: "text", text: "Done." }]),
     ]
@@ -86,10 +104,8 @@ describe("Session tool cache", () => {
     }))
 
     // Verify tools were registered
-    const opts1 = capturedQueryParams?.options
+    const opts1 = capturedQueryParamsHistory.at(-1)?.options
     expect(opts1?.mcpServers).toBeDefined()
-
-    capturedQueryParams = null
 
     // Request 2: same session, no tools — should reuse cached
     await post(app, makeRequest({
@@ -102,7 +118,7 @@ describe("Session tool cache", () => {
       ],
     }))
 
-    const opts2 = capturedQueryParams?.options
+    const opts2 = capturedQueryParamsHistory.at(-1)?.options
     expect(opts2?.mcpServers).toBeDefined()
   })
 
@@ -116,8 +132,6 @@ describe("Session tool cache", () => {
       messages: [{ role: "user", content: "hello" }],
     }), "session-a")
 
-    capturedQueryParams = null
-
     // Request 2: session B sends no tools — should NOT get session A's tools
     await post(app, makeRequest({
       stream: false,
@@ -125,7 +139,7 @@ describe("Session tool cache", () => {
       messages: [{ role: "user", content: "hello" }],
     }), "session-b")
 
-    const opts2 = capturedQueryParams?.options
+    const opts2 = capturedQueryParamsHistory.at(-1)?.options
     // In passthrough mode without tools, mcpServers should not have the passthrough server
     const hasPassthroughMcp = opts2?.mcpServers && Object.keys(opts2.mcpServers).some(
       (k: string) => k.includes("passthrough") || k === "oc"
@@ -154,8 +168,6 @@ describe("Session tool cache", () => {
       ],
     }))
 
-    capturedQueryParams = null
-
     // Request 3: no tools — should get the updated set (TOOL_A + TOOL_B)
     await post(app, makeRequest({
       stream: false,
@@ -169,7 +181,7 @@ describe("Session tool cache", () => {
       ],
     }))
 
-    const opts3 = capturedQueryParams?.options
+    const opts3 = capturedQueryParamsHistory.at(-1)?.options
     expect(opts3?.mcpServers).toBeDefined()
   })
 
@@ -188,8 +200,6 @@ describe("Session tool cache", () => {
         messages: [{ role: "user", content: "hello" }],
       }))
 
-      capturedQueryParams = null
-
       // Request without tools — no cache should apply
       await post(app, makeRequest({
         stream: false,
@@ -201,7 +211,7 @@ describe("Session tool cache", () => {
         ],
       }))
 
-      const opts2 = capturedQueryParams?.options
+      const opts2 = capturedQueryParamsHistory.at(-1)?.options
       const hasPassthroughMcp = opts2?.mcpServers && Object.keys(opts2.mcpServers).some(
         (k: string) => k.includes("passthrough") || k === "oc"
       )
@@ -210,5 +220,36 @@ describe("Session tool cache", () => {
       if (originalPassthrough === undefined) delete process.env.MERIDIAN_PASSTHROUGH
       else process.env.MERIDIAN_PASSTHROUGH = originalPassthrough
     }
+  })
+
+  it("carries passthrough tool and MCP caches to a relocated profile", async () => {
+    const app = createTestApp(["personal", "work"])
+    rateLimitOnceDirs.add("/profiles/personal")
+
+    const first = await post(app, makeRequest({
+      stream: false,
+      tools: [TOOL_A],
+      messages: [{ role: "user", content: "hello" }],
+    }), "S")
+    const continuation = await post(app, makeRequest({
+      stream: false,
+      tools: [],
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "continue" },
+      ],
+    }), "S")
+
+    expect([first.status, continuation.status]).toEqual([200, 200])
+    expect(capturedQueryParamsHistory.map((params) => params.options?.env?.CLAUDE_CONFIG_DIR)).toEqual([
+      "/profiles/personal",
+      "/profiles/work",
+      "/profiles/work",
+    ])
+    const relocatedMcp = capturedQueryParamsHistory[1]?.options?.mcpServers?.oc
+    const continuationMcp = capturedQueryParamsHistory[2]?.options?.mcpServers?.oc
+    expect(relocatedMcp).toBeDefined()
+    expect(continuationMcp).toBe(relocatedMcp)
   })
 })
