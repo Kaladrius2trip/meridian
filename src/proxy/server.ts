@@ -728,7 +728,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const betas = betaFilter.forwarded
 
         // Session resume: look up cached Claude SDK session and classify mutation
-        const agentSessionId = adapter.getSessionId(c)
+        const agentSessionId = adapter.getSessionId(c, body)
         // Scope session keys by profile to isolate resume state across accounts.
         // For agents with session IDs (OpenCode): prefix the key.
         // For agents without (Pi): pass profile-scoped workingDirectory to fingerprint lookup.
@@ -768,7 +768,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const lastMessage = Array.isArray(body.messages) ? body.messages[body.messages.length - 1] : undefined
         const lastIsToolResult = Array.isArray(lastMessage?.content)
           && lastMessage.content.some((b: any) => b?.type === "tool_result")
-        const isClientDrivenLoop = !agentSessionId && lastIsToolResult
+        // NOTE: Claude Code owns its tool loop but also expects Meridian to
+        // resume the backing SDK session. Older clients may omit metadata, so
+        // preserve fingerprint resume instead of treating their tool results
+        // as unrelated headerless workflow requests.
+        const isClientDrivenLoop = adapter.name !== "claude-code" && !agentSessionId && lastIsToolResult
         const isIndependentSession =
           requestSource?.startsWith("fork-") || requestSource?.startsWith("subagent-") || isClientDrivenLoop || false
         let lineageResult = isIndependentSession

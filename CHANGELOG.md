@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.45.4](https://github.com/rynfar/meridian/compare/meridian-v1.45.3...meridian-v1.45.4) (2026-07-12)
+
+
+### Bug Fixes
+
+* attribute replayed tool results to the calls that produced them ([#590](https://github.com/rynfar/meridian/issues/590)) ([99a2ab1](https://github.com/rynfar/meridian/commit/99a2ab1a8172535eb5bbbd32492248801919a3b0))
+* close dangling content blocks before recovery frames (red aborted tool calls) ([#591](https://github.com/rynfar/meridian/issues/591)) ([d0a5bf3](https://github.com/rynfar/meridian/commit/d0a5bf324ea4ccc0f2edebd9a477cc4681ab9d14))
+* consolidate mid-history multimodal onto the final user turn ([#588](https://github.com/rynfar/meridian/issues/588)) ([fdea2be](https://github.com/rynfar/meridian/commit/fdea2be1be7d9d157f94778b02779d5220cfc73b))
+* resume Claude Code sessions after tool results ([dba529c](https://github.com/rynfar/meridian/commit/dba529cd464eb773714d572ef34c27c9ac994f31))
+* resume Claude Code sessions after tool results ([468dd08](https://github.com/rynfar/meridian/commit/468dd0842f7474928855881293559af830536f89))
+
 ## [1.45.3](https://github.com/rynfar/meridian/compare/meridian-v1.45.2...meridian-v1.45.3) (2026-07-10)
 
 
