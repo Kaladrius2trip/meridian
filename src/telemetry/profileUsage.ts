@@ -12,15 +12,18 @@
  * behavior via tests.
  */
 
-/** Friendly labels for Anthropic's raw window keys. */
+// Labels mirror claude.ai's usage panel: the 5-hour window is "Current
+// session", the aggregate weekly window is "All models", and the per-model
+// weekly caps use the model name. "omelette" is Anthropic's codename for the
+// Fable tier (claude.ai renders it "Fable"); "seven_day_fable" is a defensive
+// alias should the API adopt a plain key — only one is ever populated at once.
 export const WINDOW_LABELS: Record<string, string> = {
-  five_hour: "5h",
-  seven_day: "7d",
-  seven_day_opus: "7d Opus",
-  seven_day_sonnet: "7d Sonnet",
-  seven_day_oauth_apps: "7d Apps",
-  seven_day_cowork: "7d Cowork",
-  seven_day_omelette: "7d Omelette",
+  five_hour: "Current session",
+  seven_day: "All models",
+  seven_day_opus: "Opus",
+  seven_day_sonnet: "Sonnet",
+  seven_day_omelette: "Fable",
+  seven_day_fable: "Fable",
 }
 
 /**

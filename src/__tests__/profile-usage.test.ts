@@ -15,14 +15,19 @@ const DAY = 86_400_000
 const WEEK = 7 * DAY
 
 describe("labelForWindow", () => {
-  it("maps every documented Anthropic window type", () => {
-    expect(labelForWindow("five_hour")).toBe("5h")
-    expect(labelForWindow("seven_day")).toBe("7d")
-    expect(labelForWindow("seven_day_opus")).toBe("7d Opus")
-    expect(labelForWindow("seven_day_sonnet")).toBe("7d Sonnet")
-    expect(labelForWindow("seven_day_oauth_apps")).toBe("7d Apps")
-    expect(labelForWindow("seven_day_cowork")).toBe("7d Cowork")
-    expect(labelForWindow("seven_day_omelette")).toBe("7d Omelette")
+  it("maps the model-facing Anthropic window types to claude.ai labels", () => {
+    expect(labelForWindow("five_hour")).toBe("Current session")
+    expect(labelForWindow("seven_day")).toBe("All models")
+    expect(labelForWindow("seven_day_opus")).toBe("Opus")
+    expect(labelForWindow("seven_day_sonnet")).toBe("Sonnet")
+    // "omelette" is Anthropic's codename for the Fable tier (shown as "Fable" on claude.ai).
+    expect(labelForWindow("seven_day_omelette")).toBe("Fable")
+    expect(labelForWindow("seven_day_fable")).toBe("Fable")
+  })
+
+  it("prettifies internal windows that have no explicit model label", () => {
+    expect(labelForWindow("seven_day_oauth_apps")).toBe("Seven Day Oauth Apps")
+    expect(labelForWindow("seven_day_cowork")).toBe("Seven Day Cowork")
   })
 
   it("falls back gracefully for unknown window types", () => {

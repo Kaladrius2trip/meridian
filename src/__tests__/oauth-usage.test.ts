@@ -109,6 +109,22 @@ describe("oauthUsage", () => {
     expect(w!.type).toBe("five_hour")
   })
 
+  test("passes through per-model windows outside the legacy allowlist (e.g. fable)", async () => {
+    // Regression: buildSnapshot used a hardcoded allowlist that silently
+    // dropped any window it didn't name — so a new per-model weekly cap (the
+    // Fable limit that triggers the profile switch) never reached the usage
+    // page. Whatever window Anthropic returns must now surface.
+    const fetchImpl = fixedFetch(() => new Response(JSON.stringify({
+      five_hour: { utilization: 22, resets_at: "2026-05-03T17:00:00Z" },
+      seven_day: { utilization: 39, resets_at: "2026-05-03T17:00:00Z" },
+      seven_day_fable: { utilization: 61, resets_at: "2026-05-03T17:00:00Z" },
+    }), { status: 200 }))
+    const result = await fetchOAuthUsage({ force: true, store: makeStore("t"), fetchImpl })
+    const fable = result!.windows.find(w => w.type === "seven_day_fable")
+    expect(fable).toBeDefined()
+    expect(fable!.utilization).toBeCloseTo(0.61, 5)
+  })
+
   test("captures extra_usage block", async () => {
     const fetchImpl = fixedFetch(() => new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 }))
     const result = await fetchOAuthUsage({ force: true, store: makeStore("t"), fetchImpl })
