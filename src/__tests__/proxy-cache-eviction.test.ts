@@ -1,5 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test"
 import { assistantMessage } from "./helpers"
+import { join } from "node:path"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 
 const originalMaxSessions = process.env.CLAUDE_PROXY_MAX_SESSIONS
 process.env.CLAUDE_PROXY_MAX_SESSIONS = "2"
@@ -34,11 +37,11 @@ mock.module("../mcpTools", () => ({
   createOpencodeMcpServer: () => ({ type: "sdk", name: "opencode", instance: {} }),
 }))
 
-mock.module("../proxy/sessionStore", () => ({
-  lookupSharedSession: () => undefined,
-  storeSharedSession: () => {},
-  clearSharedSessions: () => {},
-}))
+// No mock.module for the session store here — bun module mocks leak process-wide
+// and poison every session-store test file that runs after this one. The real
+// store pointed at a temp dir gives the same isolation, because LRU eviction
+// cascades to evictSharedSession, so evicted sessions miss in the file store too.
+const { setSessionStoreDir, clearSharedSessions } = await import("../proxy/sessionStore")
 
 const { createProxyServer, clearSessionCache, getMaxSessionsLimit } = await import("../proxy/server")
 
@@ -86,14 +89,21 @@ async function sendContinuation(app: TestApp, session: string, firstMessage: str
   await response.json()
 }
 
+let storeTmpDir: string
+
 beforeEach(() => {
   mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
   capturedQueryParams = null
   queuedSessionIds = []
+  storeTmpDir = mkdtempSync(join(tmpdir(), "cache-eviction-"))
+  setSessionStoreDir(storeTmpDir)
+  clearSharedSessions()
   clearSessionCache()
 })
 
 afterAll(() => {
+  setSessionStoreDir(null)
+  try { rmSync(storeTmpDir, { recursive: true }) } catch {}
   if (originalMaxSessions === undefined) delete process.env.CLAUDE_PROXY_MAX_SESSIONS
   else process.env.CLAUDE_PROXY_MAX_SESSIONS = originalMaxSessions
 })
@@ -124,7 +134,10 @@ describe("Session cache LRU eviction", () => {
     // Store C — should evict B (not A, since A was accessed more recently)
     await send(app, "oc-C", "first-C", "sdk-C")
 
-    // B should be evicted — continuation attempt should not resume
+    // B should be evicted — continuation attempt should not resume.
+    // Clear the file store first: cross-proxy resume would legitimately
+    // resurrect B from disk, but this test asserts in-memory LRU order only.
+    clearSharedSessions()
     await sendContinuation(app, "oc-B", "first-B", "follow-up-B", "sdk-B-new")
     expect(capturedQueryParams?.options?.resume).toBeUndefined()
   })

@@ -6,6 +6,7 @@ import { piTransforms } from "./pi"
 import { forgeCodeTransforms } from "./forgecode"
 import { passthroughTransforms } from "./passthrough"
 import { hermesTransforms } from "./hermes"
+import { cherryTransforms } from "./cherry"
 
 const ADAPTER_TRANSFORMS: Record<string, readonly Transform[]> = {
   opencode: openCodeTransforms,
@@ -14,6 +15,7 @@ const ADAPTER_TRANSFORMS: Record<string, readonly Transform[]> = {
   pi: piTransforms,
   forgecode: forgeCodeTransforms,
   passthrough: passthroughTransforms,
+  cherry: cherryTransforms,
   // The OpenAI-compatible endpoint reuses OpenCode's transforms verbatim so
   // tool/passthrough behaviour is identical; only the preset default differs
   // (see sdkFeatures.ADAPTER_DEFAULTS.openai).

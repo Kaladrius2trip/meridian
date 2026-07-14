@@ -331,7 +331,7 @@ describe("Session lineage: undo detection", () => {
     ], "sdk-1")
 
     expect(getCaptured()?.options?.resume).toBe("sdk-1")
-    expect(getCaptured()?.prompt).toBe("Human: correction: center the lower hole")
+    expect(getCaptured()?.prompt).toBe("correction: center the lower hole")
   })
 
   it("undo forks then subsequent turns resume the fork", async () => {

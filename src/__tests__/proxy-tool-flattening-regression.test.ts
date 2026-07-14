@@ -257,13 +257,111 @@ describe("tool-result attribution on full-history replay (#552)", () => {
     await postWithSession(app, "attribution-session-1", toolLoopHistory, "sdk-attr-1")
 
     const prompt = promptToString(getCaptured()?.prompt)
-    // The write result must be attributed — the model must be able to see IT
-    // wrote tmp/test2.txt, not just an unexplained success string.
-    expect(prompt).toContain("[write tmp/test2.txt]")
+    // The write result must be attributed WITH its content — the model must be
+    // able to recognize its own work product, not just an unexplained success
+    // string (#552 gave it the target; the #496 follow-up adds the content, so
+    // it stops re-deriving near-duplicate edits and blaming a phantom co-editor).
+    expect(prompt).toContain('[your write tmp/test2.txt → "apple"]')
     expect(prompt).toContain("Wrote file successfully")
-    // The read result must be attributed to the right file.
-    expect(prompt).toContain("[read tmp/test1.txt]")
+    // The read result must be attributed to the right file (no content summary
+    // for non-mutating tools).
+    expect(prompt).toContain("[your read tmp/test1.txt]")
     // And the banned verbose shapes must stay banned.
     assertNoFlattenedToolBlocks(getCaptured()?.prompt)
+  })
+
+  it("replays edit calls with a truncated summary of what changed (#496 follow-up)", async () => {
+    const app = createTestApp()
+    const editHistory = [
+      { role: "user", content: "add ignore rules to dependabot config" },
+      {
+        role: "assistant",
+        content: [{
+          type: "tool_use", id: "toolu_e1", name: "edit",
+          input: {
+            filePath: ".github/dependabot.yml",
+            oldString: "    open-pull-requests-limit: 10",
+            newString: "    open-pull-requests-limit: 10\n    ignore:\n      # Major bumps need manual review\n      - dependency-name: \"*\"",
+          },
+        }],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_e1", content: "Edit applied successfully." },
+          { type: "text", text: "now validate the file" },
+        ],
+      },
+    ]
+    await postWithSession(app, "attribution-session-2", editHistory, "sdk-attr-2")
+
+    const prompt = promptToString(getCaptured()?.prompt)
+    // The model must see WHAT it inserted, whitespace-collapsed, so it can
+    // recognize its own wording later instead of concluding "the first
+    // variant of the comments isn't mine" (stefanpartheym's #496 transcript).
+    expect(prompt).toContain('[your edit .github/dependabot.yml → "open-pull-requests-limit: 10 ignore: # Major bumps need manual review')
+    expect(prompt).toContain("Edit applied successfully.")
+    assertNoFlattenedToolBlocks(getCaptured()?.prompt)
+  })
+})
+
+describe("transcript-format imitation (#496 self-talk regression)", () => {
+  // 'Human:'/'Assistant:' transcript lines in the prompt teach the model the
+  // transcript format — it then completes the pattern itself, emitting
+  // 'Human: ...' turns and self-approving actions (duncanam's report). The
+  // structured/multimodal path already uses the safe convention (user turns
+  // plain, assistant turns as '[Assistant: ...]', resume deltas drop
+  // assistant messages the SDK session already has). The text path must match.
+  const transcriptMarker = /(^|\n)(Human|Assistant): /
+
+  it("resume delta: no transcript markers, assistant delta dropped, results attributed", async () => {
+    const app = createTestApp()
+    // Turn 1 — establish the session
+    await postWithSession(app, "sess-selftalk", [
+      { role: "user", content: "edit the config file" },
+    ], "sdk-selftalk")
+
+    // Turn 2 — client returns the executed tool round-trip
+    capturedParams = null
+    await postWithSession(app, "sess-selftalk", [
+      { role: "user", content: "edit the config file" },
+      { role: "assistant", content: [
+        { type: "text", text: "I'll edit that file now." },
+        { type: "tool_use", id: "tu_st1", name: "edit", input: { filePath: "a.yml", oldString: "x", newString: "y" } },
+      ]},
+      { role: "user", content: [
+        { type: "tool_result", tool_use_id: "tu_st1", content: "Edit applied successfully." },
+      ]},
+    ], "sdk-selftalk")
+
+    expect(getCaptured()?.options?.resume).toBe("sdk-selftalk")
+    const prompt = promptToString(getCaptured()?.prompt)
+    expect(prompt).not.toMatch(transcriptMarker)
+    // The assistant's delta text must NOT be replayed — the resumed SDK
+    // session already contains that turn; re-sending it as user text is the
+    // imitation seed.
+    expect(prompt).not.toContain("I'll edit that file now.")
+    // The tool result (the genuinely new information) must be present + attributed.
+    expect(prompt).toContain("Edit applied successfully.")
+    expect(prompt).toContain("[your edit a.yml")
+  })
+
+  it("fresh multi-turn replay: assistant turns bracketed, no transcript markers", async () => {
+    const app = createTestApp()
+    capturedParams = null
+    // New session header + full history → fresh replay of a text conversation
+    await postWithSession(app, "sess-selftalk-fresh", [
+      { role: "user", content: "what is the capital of France?" },
+      { role: "assistant", content: "Paris." },
+      { role: "user", content: "and of Germany?" },
+    ], "sdk-selftalk-fresh")
+
+    const prompt = promptToString(getCaptured()?.prompt)
+    expect(prompt).not.toMatch(transcriptMarker)
+    // Assistant context survives in the bracketed, non-imitatable shape the
+    // structured path has used since #553.
+    expect(prompt).toContain("[Assistant: Paris.]")
+    expect(prompt).toContain("what is the capital of France?")
+    expect(prompt).toContain("and of Germany?")
   })
 })

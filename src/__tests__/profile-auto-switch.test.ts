@@ -54,7 +54,9 @@ mock.module("../logger", () => ({
 
 import { resolveSdkModelDefaults } from "../proxy/models"
 
+const realModels = await import("../proxy/models")
 mock.module("../proxy/models", () => ({
+  ...realModels,
   mapModelToClaudeModel: () => "sonnet",
   resolveClaudeExecutableAsync: async () => "claude",
   resolveSdkModelDefaults,
