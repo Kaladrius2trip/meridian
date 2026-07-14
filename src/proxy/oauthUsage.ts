@@ -117,14 +117,16 @@ export function getLastKnownUsage(profileId?: string | null): OAuthUsageSnapshot
   return cacheByProfile.get(profileId ?? DEFAULT_KEY) ?? null
 }
 
-const WINDOW_TYPES: Array<keyof RawOAuthUsageResponse> = [
+// Preferred display order for the windows we name explicitly. This is NOT an
+// allowlist: buildSnapshot passes through every window Anthropic returns, so a
+// newly added per-model weekly cap surfaces even before it is listed here.
+const PREFERRED_WINDOW_ORDER = [
   "five_hour",
   "seven_day",
   "seven_day_opus",
   "seven_day_sonnet",
-  "seven_day_oauth_apps",
-  "seven_day_cowork",
   "seven_day_omelette",
+  "seven_day_fable",
 ]
 
 function parseIsoToMs(raw: string | null | undefined): number | null {
@@ -141,13 +143,24 @@ function normalizeUtilization(raw: number | null | undefined): number | null {
 
 function buildSnapshot(raw: RawOAuthUsageResponse): OAuthUsageSnapshot {
   const windows: OAuthUsageWindow[] = []
-  for (const key of WINDOW_TYPES) {
-    const w = raw[key] as RawOAuthWindow | null | undefined
-    if (!w) continue
+  const seen = new Set<string>()
+  const emit = (key: string, value: unknown): void => {
+    if (seen.has(key) || !value || typeof value !== "object") return
+    seen.add(key)
+    const w = value as { utilization?: number | null; resets_at?: string | null }
     const utilization = normalizeUtilization(w.utilization)
     const resetsAt = parseIsoToMs(w.resets_at)
-    if (utilization === null && resetsAt === null) continue
-    windows.push({ type: key as string, utilization, resetsAt })
+    if (utilization === null && resetsAt === null) return
+    windows.push({ type: key, utilization, resetsAt })
+  }
+  // Known windows first, in display order.
+  for (const key of PREFERRED_WINDOW_ORDER) emit(key, (raw as Record<string, unknown>)[key])
+  // Pass-through: any other window Anthropic returns (e.g. a new per-model
+  // weekly cap) surfaces instead of being silently dropped by an allowlist.
+  // extra_usage has a different shape and is handled separately below.
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "extra_usage") continue
+    emit(key, value)
   }
 
   const extra = raw.extra_usage
