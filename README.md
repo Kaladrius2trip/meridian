@@ -99,6 +99,8 @@ Then in `~/.config/opencode/opencode.json`:
 
 > **Important:** Do not use `meridian setup` on NixOS. It writes an absolute Nix store path (e.g. `/nix/store/...-meridian-1.x.x/lib/...`) into your OpenCode config, which will break on the next `nixos-rebuild switch` or `home-manager switch` when the store path changes. Use one of the approaches above instead.
 
+> **Note:** The bundled Claude Code binary (`claude.exe`) is patched with `autoPatchelfHook` at build time, so it runs on NixOS out of the box. If you previously enabled `programs.nix-ld.enable = true` as a workaround for `Could not start dynamically linked executable` (#501), that is no longer required for Meridian.
+
 **Home Manager service** -- run Meridian as a user systemd service:
 
 ```nix
@@ -163,7 +165,8 @@ The Claude Code SDK provides programmatic access to Claude. But your favorite co
 - **Auto token refresh** — expired OAuth tokens are refreshed automatically; requests continue without interruption
 - **Passthrough mode** — forward tool calls to the client instead of executing internally
 - **Multimodal** — images, documents, file attachments, and multimodal tool results pass through to Claude
-- **Multi-profile** — switch between Claude accounts instantly, no restart needed
+- **Multi-profile** — switch between Claude accounts instantly, no restart needed; opt-in [sticky session routing](#sticky-session-routing) distributes sessions across accounts while keeping per-account prompt caches warm
+- **Adapter instances** — run several configurations of the same adapter side by side (per-instance thinking, system prompt, passthrough) selected by header or match rules — see [Adapter instances](#adapter-instances)
 - **Telemetry dashboard** — real-time performance metrics at `/telemetry`, including token usage and prompt cache efficiency ([`MONITORING.md`](MONITORING.md))
 - **Telemetry persistence** — opt-in SQLite storage for telemetry data that survives proxy restarts, with configurable retention
 - **Prometheus metrics** — `GET /metrics` endpoint for scraping request counters and duration histograms
@@ -222,11 +225,14 @@ MERIDIAN_PASSTHROUGH=0 meridian   # force internal
 
 For large tool sets (>15 tools), non-core tools are automatically deferred via the SDK's ToolSearch mechanism. Core tools (read, write, edit, bash, glob, grep) are always loaded eagerly. The deferral threshold is configurable with `MERIDIAN_DEFER_TOOL_THRESHOLD`.
 
+**Digest-turn elimination** — after a tool call is captured, the SDK would normally invoke the model one more time to "digest" the denial before ending the turn. That extra invocation is discarded by the proxy but fully billed — measured at ~400+ wasted output tokens and 2–3× extra latency per tool step (and on always-thinking models like Fable, a full thinking pass each time). Meridian now aborts the SDK query the moment every tool call's denial is persisted, so the digest turn never generates. Sessions remain resumable and tool-result attribution is unaffected. Kill switch: `MERIDIAN_PASSTHROUGH_EARLY_STOP=0` restores the old behavior.
+
 ### Known limitations
 
 - **Single tool round-trip per request** — in passthrough mode, the SDK is configured with `maxTurns=2` (or 3 for deferred tools). Multi-step agentic loops where Claude needs several consecutive tool calls require the client to re-send after each round.
 - **Blocked tools** — 13 built-in SDK tools (Read, Write, Bash, etc.) are blocked to prevent conflicts with the client's own tools. 15 additional Claude Code-only tools (CronCreate, EnterWorktree, Agent, etc.) are blocked because they require capabilities that external clients don't support.
 - **Subagent extraction** — Meridian parses the client's Task tool description to extract subagent names and build SDK AgentDefinitions. If the client's agent framework uses a non-standard format, subagent routing may not work automatically.
+- **Anthropic server tools not supported** — native server-side tools (`web_search_*`, `web_fetch_*`) are a raw Anthropic API feature (billed to an API key) that emits `server_tool_use` / `web_search_tool_result` blocks the Claude Max / Agent SDK path cannot produce. A request carrying one is rejected with a `400` explaining the fix. If a plugin needs server-side web search (e.g. [`opencode-websearch`](https://github.com/emilsvennesson/opencode-websearch)), give it its **own** provider pointed at `https://api.anthropic.com` with your `ANTHROPIC_API_KEY` — don't route that call through Meridian.
 
 ## Multi-Profile Support
 
@@ -285,6 +291,22 @@ curl -H "x-meridian-profile: work" ...
 
 You can also switch profiles from the web UI at `http://127.0.0.1:3456/profiles` — a dropdown appears in the nav bar on all pages when profiles are configured.
 
+### Sticky session routing
+
+With multiple profiles (e.g. two Claude Max subscriptions), Meridian can distribute sessions across profiles automatically while preserving **session affinity** — Anthropic's prompt caching is per-account, so a session must stay on one account to keep its ~99% cache hit rate:
+
+```bash
+MERIDIAN_ROUTING=sticky meridian     # or set "routing": "sticky" in ~/.config/meridian/settings.json
+```
+
+- Each session is assigned to a profile by rendezvous hashing of its session id — **deterministic and stateless**, so assignments survive proxy restarts with no state to lose
+- Adding/removing a profile only reassigns the sessions belonging to the changed arm — everything else keeps its warm cache
+- A session's subagent/fork requests share its assignment (same session id → same account)
+- The `x-meridian-profile` header still overrides everything, per request
+- Default is `active` (all traffic to the active profile — the pre-existing behavior); sticky is opt-in
+
+Request logs show the assignment (`profile=work(sticky)`), and `GET /profiles/list` reports the current `routing` mode.
+
 ### Profile commands
 
 | Command | Description |
@@ -327,6 +349,11 @@ Profile shapes:
 - `oauthToken` — long-lived token from `claude setup-token`; sets `CLAUDE_CODE_OAUTH_TOKEN`, no config dir needed
 
 When `MERIDIAN_PROFILES` is set, it takes precedence over disk-configured profiles. When unset, Meridian auto-discovers profiles from `~/.config/meridian/profiles.json` on each request.
+
+Related environment variables:
+
+- `MERIDIAN_ROUTING=sticky` — enable [sticky session routing](#sticky-session-routing) across profiles (default `active`)
+- `MERIDIAN_ADAPTER_INSTANCES='{...}'` — define [adapter instances](#adapter-instances) inline instead of via `~/.config/meridian/adapter-instances.json`
 
 ## Agent Setup
 
@@ -473,6 +500,20 @@ Point any OpenAI-compatible tool at `http://127.0.0.1:3456` with any API key val
 
 > **Note:** Multi-turn conversations work by packing prior turns into the system prompt. Each request is a fresh SDK session — OpenAI clients replay full history themselves and don't use Meridian's session resumption.
 
+### Cherry Studio
+
+[Cherry Studio](https://github.com/CherryHQ/cherry-studio) is a desktop chat client. Point it at Meridian by setting the Anthropic API base URL to `http://127.0.0.1:3456` (any API key value works).
+
+Because Cherry Studio is a chat client rather than a coding agent, select the `cherry` adapter so Claude's **built-in web search** is available (coding-agent adapters block it in favour of their own):
+
+```bash
+MERIDIAN_DEFAULT_AGENT=cherry meridian
+```
+
+The `cherry` adapter runs in internal mode: Claude executes `WebSearch`/`WebFetch` itself and Meridian returns the grounded answer — the internal tool calls are hidden from the client. This resolves the "no WebSearch/WebFetch tool exposed" error (#481).
+
+> Cherry Studio doesn't send a Meridian-specific header, so set `MERIDIAN_DEFAULT_AGENT=cherry` on a Meridian dedicated to it, or send `x-meridian-agent: cherry` if your setup allows custom headers.
+
 ### ForgeCode
 
 Add a custom provider to `~/forge/.forge.toml`:
@@ -562,6 +603,27 @@ Requests flow through the Claude Code adapter which:
 - Parses the client's real working directory from its `Primary working directory:` system-prompt line so Claude answers path-related questions with your local path, not the proxy host's.
 - Leaves the SDK subprocess cwd on the proxy host (Claude Code's local paths don't exist there).
 - Runs in passthrough mode by default — Claude Code executes its own tools on the machine it runs on; Meridian just forwards tool_use blocks.
+
+### Adapter instances
+
+Run several configurations of the same adapter side by side — e.g. a passthrough variant with thinking enabled and one without, or a dedicated config for a specific client. Define instances in `~/.config/meridian/adapter-instances.json` (or the `MERIDIAN_ADAPTER_INSTANCES` env var as a JSON string):
+
+```jsonc
+{
+  "oc-thinky":  { "base": "opencode", "features": { "thinking": "enabled" } },
+  "lite-plain": { "base": "passthrough", "passthrough": true,
+                  "match": { "userAgentPrefix": "litellm/" } },
+  "team-webui": { "base": "opencode", "features": { "codeSystemPrompt": false },
+                  "match": { "header": { "x-team": "alpha" } } }
+}
+```
+
+- **`base`** — which built-in adapter provides the behavior (tool handling, session tracking, transforms). Existing plugins and transforms scoped to the base adapter apply to its instances automatically.
+- **`features`** — per-instance overrides of the [SDK feature toggles](#sdk-feature-toggles-experimental) (thinking, system prompts, memory, ...) layered over the base's settings. Same keys as the settings UI.
+- **`passthrough`** — per-instance passthrough mode, overriding the adapter default and `MERIDIAN_PASSTHROUGH`.
+- **`match`** — optional automatic selection: exact header values and/or a User-Agent prefix. Match rules outrank built-in User-Agent detection (that's their purpose). Without `match`, select the instance per request with `x-meridian-agent: <instance-name>`.
+
+Built-in adapter names are reserved and can't be shadowed. With no instances configured, detection is exactly the built-in chain. Config file changes apply within ~5s, no restart needed.
 
 ### Any Anthropic-compatible tool
 

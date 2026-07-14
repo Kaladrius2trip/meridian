@@ -63,10 +63,13 @@ const BASE_BODY = {
   messages: [{ role: "user", content: "hello from pylon main" }],
 }
 
+const { resetActiveProfile } = await import("../proxy/profiles")
+
 describe("x-meridian-source: fingerprint cache skip for independent sessions", () => {
   beforeEach(() => {
     mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
     capturedQueryParams = null
+    resetActiveProfile()
     clearSessionCache()
   })
 

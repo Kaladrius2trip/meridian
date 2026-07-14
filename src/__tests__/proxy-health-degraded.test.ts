@@ -14,7 +14,9 @@ import { describe, it, expect, mock } from "bun:test"
 // in parallel and break its model-pin assertions.
 import { resolveSdkModelDefaults } from "../proxy/models"
 
+const realModels = await import("../proxy/models")
 mock.module("../proxy/models", () => ({
+  ...realModels,
   getClaudeAuthStatusAsync: async () => null,
   resolveClaudeExecutableAsync: async () => "claude",
   resolveSdkModelDefaults,

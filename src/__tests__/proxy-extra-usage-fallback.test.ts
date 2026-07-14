@@ -33,7 +33,9 @@ const OUT_OF_EXTRA_USAGE_ERROR = "Claude Code returned an error result: API Erro
 import { resolveSdkModelDefaults } from "../proxy/models"
 
 // Force sonnet[1m] regardless of auth status so tests are self-contained.
+const realModels = await import("../proxy/models")
 mock.module("../proxy/models", () => ({
+  ...realModels,
   mapModelToClaudeModel: () => "sonnet[1m]",
   resolveClaudeExecutableAsync: async () => "claude",
   resolveSdkModelDefaults,

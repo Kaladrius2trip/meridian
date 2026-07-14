@@ -48,7 +48,9 @@ mock.module("../mcpTools", () => ({
 import { resolveSdkModelDefaults } from "../proxy/models"
 
 // Fix auth status so mapModelToClaudeModel always picks the max/1m path
+const realModels = await import("../proxy/models")
 mock.module("../proxy/models", () => ({
+  ...realModels,
   mapModelToClaudeModel: (model: string, sub?: string | null, agentMode?: string | null) => {
     const base = model.toLowerCase()
     if (base.includes("opus")) return agentMode === "subagent" ? "opus" : "opus[1m]"

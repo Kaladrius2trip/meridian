@@ -1,7 +1,13 @@
-import { describe, expect, it } from "bun:test"
+import { afterAll, describe, expect, it } from "bun:test"
 
 const { createProxyServer, startProxyServer } = await import("../proxy/server")
 const { runCli } = await import("../../bin/cli")
+const { resetDiskProfileDiscovery, resetActiveProfile } = await import("../proxy/profiles")
+
+afterAll(() => {
+  resetDiskProfileDiscovery()
+  resetActiveProfile()
+})
 
 describe("proxy async ops", () => {
   it("starts server with async executable resolution", async () => {

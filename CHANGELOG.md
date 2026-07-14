@@ -1,5 +1,56 @@
 # Changelog
 
+## [1.49.0](https://github.com/rynfar/meridian/compare/meridian-v1.48.1...meridian-v1.49.0) (2026-07-13)
+
+
+### Features
+
+* **adapters:** named adapter instances with per-instance config ([#616](https://github.com/rynfar/meridian/issues/616)) ([fcc1d3e](https://github.com/rynfar/meridian/commit/fcc1d3ebb54d12f64c880956e4e3ee1692cc730e)), closes [#476](https://github.com/rynfar/meridian/issues/476)
+* **profiles:** sticky session-to-profile routing via rendezvous hashing ([#615](https://github.com/rynfar/meridian/issues/615)) ([873a53b](https://github.com/rynfar/meridian/commit/873a53b5d96cff5db9ed7bded3971fc71417ba57)), closes [#383](https://github.com/rynfar/meridian/issues/383)
+
+
+### Bug Fixes
+
+* **nix:** patch vendored ELF binaries so claude.exe runs on NixOS ([#612](https://github.com/rynfar/meridian/issues/612)) ([ef899f4](https://github.com/rynfar/meridian/commit/ef899f44461f50166e81b2b4bb73c9d17949c931))
+* **replay:** stop rendering Human:/Assistant: transcript lines in prompts ([#618](https://github.com/rynfar/meridian/issues/618)) ([1e1228c](https://github.com/rynfar/meridian/commit/1e1228c46f55129a89b1fc3a32a152ae12d143e9))
+
+## [1.48.1](https://github.com/rynfar/meridian/compare/meridian-v1.48.0...meridian-v1.48.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **replay:** preserve edit content and agency in fresh-replay history ([#610](https://github.com/rynfar/meridian/issues/610)) ([33760c4](https://github.com/rynfar/meridian/commit/33760c4c054d4b8acbadffdc8e04a400cc71ea65))
+
+## [1.48.0](https://github.com/rynfar/meridian/compare/meridian-v1.47.0...meridian-v1.48.0) (2026-07-13)
+
+
+### Features
+
+* **adapters:** add Cherry Studio adapter with built-in web search ([#481](https://github.com/rynfar/meridian/issues/481)) ([#608](https://github.com/rynfar/meridian/issues/608)) ([32667c8](https://github.com/rynfar/meridian/commit/32667c804fecadc7d811e27f672454591735e920))
+
+
+### Bug Fixes
+
+* **ci:** read Docker release version from package.json ([#605](https://github.com/rynfar/meridian/issues/605)) ([3fa2d71](https://github.com/rynfar/meridian/commit/3fa2d716cea26ec9fc66cfcf266865374be95f9f))
+* **tools:** fail fast on native Anthropic server tools (web_search/web_fetch) ([#607](https://github.com/rynfar/meridian/issues/607)) ([920a318](https://github.com/rynfar/meridian/commit/920a318b76bd73fecb74eaad7eeb7f44bc20bf59))
+
+
+### Performance
+
+* **passthrough:** eliminate the billed digest turn after tool capture ([#609](https://github.com/rynfar/meridian/issues/609)) ([741f645](https://github.com/rynfar/meridian/commit/741f6456ce55ff458e4b9c58afa62a6a50220c02))
+
+## [1.47.0](https://github.com/rynfar/meridian/compare/meridian-v1.46.0...meridian-v1.47.0) (2026-07-13)
+
+
+### Features
+
+* **dashboard:** add Usage tab with session, weekly, and weekly-pace ([#604](https://github.com/rynfar/meridian/issues/604)) ([e0853af](https://github.com/rynfar/meridian/commit/e0853af63cc5a5cd82bc85ba93ef98e362808497))
+
+
+### Bug Fixes
+
+* **ci:** derive Docker semver from tag_name, not the empty version output ([#601](https://github.com/rynfar/meridian/issues/601)) ([144a7ce](https://github.com/rynfar/meridian/commit/144a7ce4623fb9ff838039d875b749aa72f0eb86))
+
 ## [1.46.0](https://github.com/rynfar/meridian/compare/meridian-v1.45.4...meridian-v1.46.0) (2026-07-13)
 
 

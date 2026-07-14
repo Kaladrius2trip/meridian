@@ -12,18 +12,26 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { homedir } from "node:os"
 
-const SETTINGS_FILE = join(homedir(), ".config", "meridian", "settings.json")
+// Resolved lazily so MERIDIAN_SETTINGS_FILE (set by the test preload) can
+// redirect writes away from the real user config — profile-switch tests
+// otherwise persist bogus activeProfile values into the running proxy's state.
+function settingsFile(): string {
+  return process.env.MERIDIAN_SETTINGS_FILE ?? join(homedir(), ".config", "meridian", "settings.json")
+}
 
 export interface MeridianSettings {
   /** Last active profile ID — restored on proxy startup */
   activeProfile?: string
+  /** Profile routing mode (#383): "active" (default) or "sticky".
+   *  MERIDIAN_ROUTING env var takes precedence when set. */
+  routing?: string
 }
 
 /** Read settings from disk. Returns empty object if file doesn't exist or is invalid. */
 export function loadSettings(): MeridianSettings {
   try {
-    if (!existsSync(SETTINGS_FILE)) return {}
-    return JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"))
+    if (!existsSync(settingsFile())) return {}
+    return JSON.parse(readFileSync(settingsFile(), "utf-8"))
   } catch {
     return {}
   }
@@ -34,10 +42,10 @@ export function saveSettings(updates: Partial<MeridianSettings>): void {
   const current = loadSettings()
   const merged = { ...current, ...updates }
   try {
-    mkdirSync(dirname(SETTINGS_FILE), { recursive: true })
-    writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 })
+    mkdirSync(dirname(settingsFile()), { recursive: true })
+    writeFileSync(settingsFile(), JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 })
   } catch (err) {
-    console.warn(`[meridian] Failed to write ${SETTINGS_FILE}: ${err instanceof Error ? err.message : err}`)
+    console.warn(`[meridian] Failed to write ${settingsFile()}: ${err instanceof Error ? err.message : err}`)
   }
 }
 
