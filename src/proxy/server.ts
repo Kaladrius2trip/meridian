@@ -48,7 +48,7 @@ import { LRUMap } from "../utils/lruMap"
 
 import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics } from "../telemetry"
 import type { RequestMetric } from "../telemetry"
-import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
+import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isRateLimitError, isUsageLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, type CredentialStore } from "./tokenRefresh"
 import { checkPluginConfigured } from "./setup"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, CANONICAL_OPUS_MODEL, CANONICAL_SONNET_MODEL } from "./models"
@@ -1615,6 +1615,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     // Refresh failed — fall through and surface the error
                   }
 
+                  // Model/usage quota cap ("You've reached your Fable 5 limit")
+                  // is account-wide and tier-wide, so stripping [1m] or a few
+                  // seconds of backoff (both done by the isRateLimitError branch
+                  // below) can't clear it — only another Claude Max profile with
+                  // its own quota can. Switch if possible, else surface so the
+                  // client shows the real reset time instead of retrying blind.
+                  if (isUsageLimitError(errMsg)) {
+                    if (switchToNextProfile("non_stream")) {
+                      sdkUuidMap.length = 0
+                      for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
+                      continue
+                    }
+                    throw error
+                  }
+
                   // Rate-limit retry: first strip [1m] (free, different tier), then backoff
                   if (isRateLimitError(errMsg)) {
                     if (hasExtendedContext(model)) {
@@ -2234,6 +2249,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         continue
                       }
                       // Refresh failed — fall through and surface the error
+                    }
+
+                    // Model/usage quota cap ("You've reached your Fable 5 limit")
+                    // is account-wide and tier-wide, so stripping [1m] or a few
+                    // seconds of backoff (both done by the isRateLimitError branch
+                    // below) can't clear it — only another Claude Max profile with
+                    // its own quota can. Switch if possible, else surface so the
+                    // client shows the real reset time instead of retrying blind.
+                    if (isUsageLimitError(errMsg)) {
+                      if (switchToNextProfile("stream")) {
+                        sdkUuidMap.length = 0
+                        for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
+                        continue
+                      }
+                      throw error
                     }
 
                     // Rate-limit retry: first strip [1m] (free, different tier), then backoff

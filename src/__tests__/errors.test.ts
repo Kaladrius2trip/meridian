@@ -2,7 +2,7 @@
  * Unit tests for classifyError — pure function, no mocks needed.
  */
 import { describe, it, expect } from "bun:test"
-import { classifyError, isStaleSessionError, isRateLimitError, isExtraUsageRequiredError, extractSdkTermination, formatSdkTermination } from "../proxy/errors"
+import { classifyError, isStaleSessionError, isRateLimitError, isUsageLimitError, isExtraUsageRequiredError, extractSdkTermination, formatSdkTermination } from "../proxy/errors"
 
 describe("classifyError", () => {
   describe("authentication errors", () => {
@@ -80,6 +80,13 @@ describe("classifyError", () => {
       const result = classifyError("Claude Code returned an error result: You've hit your session limit · resets 7:57pm")
       expect(result.status).toBe(429)
       expect(result.type).toBe("rate_limit_error")
+    })
+
+    it("classifies a model/usage quota cap as a 429 with switch/reset guidance", () => {
+      const result = classifyError("Claude Code returned an error result: You've reached your Fable 5 limit. Run /usage to see when it resets.")
+      expect(result.status).toBe(429)
+      expect(result.type).toBe("rate_limit_error")
+      expect(result.message).toContain("usage limit reached")
     })
   })
 
@@ -427,5 +434,25 @@ describe("isRateLimitError", () => {
   it("returns false for unrelated errors", () => {
     expect(isRateLimitError("authentication failed")).toBe(false)
     expect(isRateLimitError("No conversation found with session ID: abc")).toBe(false)
+  })
+})
+
+describe("isUsageLimitError", () => {
+  it("detects the Claude Max model/weekly quota cap so the proxy switches profiles", () => {
+    // Real Claude Code wording for a per-model usage cap — must route to the
+    // profile auto-switch, NOT the [1m]-strip/backoff that genuine 429s use.
+    expect(isUsageLimitError("Claude Code returned an error result: You've reached your Fable 5 limit. Run /usage to see when it resets.")).toBe(true)
+    expect(isUsageLimitError("You've reached your Opus limit")).toBe(true)
+    expect(isUsageLimitError("usage limit reached")).toBe(true)
+  })
+
+  it("does not overlap with Extra Usage errors (those strip [1m] instead)", () => {
+    expect(isUsageLimitError("You're out of extra usage")).toBe(false)
+    expect(isUsageLimitError("extra usage is required for 1m context")).toBe(false)
+  })
+
+  it("returns false for unrelated errors and plain 429s", () => {
+    expect(isUsageLimitError("authentication failed")).toBe(false)
+    expect(isUsageLimitError("429 Too Many Requests")).toBe(false)
   })
 })

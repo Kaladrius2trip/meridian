@@ -35,16 +35,16 @@ export function classifyError(errMsg: string): ClassifiedError {
 
   // Rate limiting, incl. Claude Max session-limit quota caps ("session limit").
   // Same strings gate the multi-profile auto-switch (isRateLimitError, server.ts).
-  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("session limit")) {
-    const sessionLimit = lower.includes("session limit")
-    const hint = !sessionLimit && (lower.includes("1m") || lower.includes("context"))
+  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("session limit") || isUsageLimitError(errMsg)) {
+    const quotaCap = lower.includes("session limit") || isUsageLimitError(errMsg)
+    const hint = !quotaCap && (lower.includes("1m") || lower.includes("context"))
       ? " If you're frequently hitting this, set MERIDIAN_SONNET_MODEL=sonnet to use the 200k model instead."
       : ""
     return {
       status: 429,
       type: "rate_limit_error",
-      message: sessionLimit
-        ? "Claude Max session limit reached on all available profiles. Wait for the reset shown in your client, switch to a profile with remaining quota, or enable Extra Usage."
+      message: quotaCap
+        ? "Claude Max usage limit reached on all available profiles. Wait for the reset shown in your client, switch to a profile with remaining quota, or enable Extra Usage."
         : `Claude Max rate limit reached. Wait a moment and try again.${hint}`
     }
   }
@@ -183,6 +183,22 @@ export function isStaleSessionError(error: unknown): boolean {
 export function isRateLimitError(errMsg: string): boolean {
   const lower = errMsg.toLowerCase()
   return lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("session limit")
+}
+
+/**
+ * Detect Claude Max model/usage quota caps that are distinct from the 5-hour
+ * "session limit" — e.g. "You've reached your Fable 5 limit. Run /usage to see
+ * when it resets." These caps are account-wide and tier-wide: another Max
+ * profile has its own quota, so switching profiles is the remedy. Stripping
+ * [1m] (same model tier) or a few seconds of backoff (the cap resets in
+ * hours/days) do not help, so server.ts switches or surfaces immediately
+ * rather than retrying in place. Kept separate from isRateLimitError so the
+ * switch path can skip the [1m]-strip + backoff detour that genuine 429s use.
+ */
+export function isUsageLimitError(errMsg: string): boolean {
+  const lower = errMsg.toLowerCase()
+  return (lower.includes("reached your") && lower.includes("limit"))
+    || lower.includes("usage limit reached")
 }
 
 /**
