@@ -39,6 +39,11 @@ export interface RequestMetric {
   /** Streaming or non-streaming */
   mode: "stream" | "non-stream"
 
+  /** Envelope-integrity violations detected on this response (dangling_block,
+   *  undelivered_tool_use, empty_tool_input). Absent when the envelope was
+   *  clean — the overwhelmingly common case. See proxy/envelopeIntegrity.ts. */
+  envelopeViolations?: string[]
+
   /** Whether the request used session resume */
   isResume: boolean
 
@@ -136,6 +141,9 @@ export interface TelemetrySummary {
   totalRequests: number
   /** Requests that returned an error */
   errorCount: number
+  /** Total envelope-integrity violations across the window (dangling blocks,
+   *  undelivered tool calls, empty required inputs). 0 = wire contract clean. */
+  envelopeViolationCount: number
   /** Requests per minute */
   requestsPerMinute: number
 
